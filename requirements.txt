@@ -1,6 +1,5 @@
-streamlit
-pandas
-numpy
-scikit-fuzzy
-scikit-learn
-openpyxl
+streamlit>=1.32
+pandas>=2.0
+numpy>=1.25
+matplotlib>=3.7
+openpyxl>=3.1
