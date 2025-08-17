@@ -31,9 +31,9 @@ def likert5_default_map() -> Dict[int, TFN]:
     return {1: TFN(0,0,25), 2: TFN(15,30,45), 3: TFN(40,50,60), 4: TFN(55,70,85), 5: TFN(75,100,100)}
 
 # ==============================
-# Fuzzy-Hybrid TOPSIS
+# Fuzzy-Hybrid TOPSIS Functions
 # ==============================
-def _normalize_fuzzy_matrix(matrix: List[List[TFN]], is_benefit: List[bool]) -> List[List[TFN]]:
+def normalize_fuzzy_matrix(matrix: List[List[TFN]], is_benefit: List[bool]) -> List[List[TFN]]:
     m = len(matrix); n = len(matrix[0])
     c_max = [max(matrix[i][j].c for i in range(m)) for j in range(n)]
     a_min = [min(matrix[i][j].a for i in range(m)) for j in range(n)]
@@ -51,21 +51,21 @@ def _normalize_fuzzy_matrix(matrix: List[List[TFN]], is_benefit: List[bool]) -> 
         out.append(row)
     return out
 
-def _apply_weights(matrix: List[List[TFN]], weights: List[float]) -> List[List[TFN]]:
+def apply_weights(matrix: List[List[TFN]], weights: List[float]) -> List[List[TFN]]:
     m, n = len(matrix), len(matrix[0])
     wsum = sum(weights)
     w = [wi/wsum for wi in weights]
     return [[matrix[i][j].scale(w[j]) for j in range(n)] for i in range(m)]
 
-def _fuzzy_distance(x: TFN, y: TFN) -> float:
+def fuzzy_distance(x: TFN, y: TFN) -> float:
     return math.sqrt((x.a - y.a)**2 + (x.b - y.b)**2 + (x.c - y.c)**2)
 
 def fuzzy_topsis_cc(matrix: List[List[TFN]], is_benefit: List[bool], weights: Optional[List[float]] = None) -> np.ndarray:
     m = len(matrix); n = len(matrix[0])
     if weights is None:
         weights = [1.0/n]*n
-    norm = _normalize_fuzzy_matrix(matrix, is_benefit)
-    vw = _apply_weights(norm, weights)
+    norm = normalize_fuzzy_matrix(matrix, is_benefit)
+    vw = apply_weights(norm, weights)
     fpis: List[TFN] = []; fnis: List[TFN] = []
     for j in range(n):
         col = [vw[i][j] for i in range(m)]
@@ -74,8 +74,8 @@ def fuzzy_topsis_cc(matrix: List[List[TFN]], is_benefit: List[bool], weights: Op
     d_plus = np.zeros(m); d_minus = np.zeros(m)
     for i in range(m):
         for j in range(n):
-            d_plus[i]  += _fuzzy_distance(vw[i][j], fpis[j])**2
-            d_minus[i] += _fuzzy_distance(vw[i][j], fnis[j])**2
+            d_plus[i]  += fuzzy_distance(vw[i][j], fpis[j])**2
+            d_minus[i] += fuzzy_distance(vw[i][j], fnis[j])**2
         d_plus[i]  = math.sqrt(d_plus[i])
         d_minus[i] = math.sqrt(d_minus[i])
     cc = d_minus / (d_plus + d_minus + 1e-12)
@@ -103,15 +103,10 @@ def apostle_quadrants(x, y, x_thr, y_thr,
     return out
 
 def eco_fuzzy_sets_4(val: float) -> Tuple[float,float,float,float]:
-    """Return memberships to (Low, MedLow, MedHigh, High) fuzzy sets on [0,1]."""
     low, medlow, medhigh, high = 0,0,0,0
-    # Low
     if val <= 0.33: low = 1 - val/0.33
-    # High
     if val >= 0.66: high = (val-0.66)/0.34 if val <=1 else 1
-    # MedLow
     if 0 <= val <= 0.66: medlow = 1 - abs(val-0.33)/0.33
-    # MedHigh
     if 0.33 <= val <= 1: medhigh = 1 - abs(val-0.66)/0.34
     return (max(low,0), max(medlow,0), max(medhigh,0), max(high,0))
 
