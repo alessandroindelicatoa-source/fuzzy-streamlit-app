@@ -1,414 +1,79 @@
-# app_fuzzy.py
-# -*- coding: utf-8 -*-
-import io
-import math
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Any
-
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 import streamlit as st
+import pandas as pd
+import numpy as np
 
-# ==============================
-# Fuzzy numbers and utilities
-# ==============================
-@dataclass(frozen=True)
-class TFN:
-    a: float
-    b: float
-    c: float
-    def __post_init__(self):
-        if not (self.a <= self.b <= self.c):
-            raise ValueError("TFN requires a ≤ b ≤ c.")
-    def scale(self, w: float) -> "TFN":
-        return TFN(self.a*w, self.b*w, self.c*w)
-
-def likert4_default_map() -> Dict[int, TFN]:
-    return {
-        1: TFN(0, 0, 50),
-        2: TFN(30, 50, 70),
-        3: TFN(50, 70, 90),
-        4: TFN(70, 100, 100),
-    }
-
-def likert5_default_map() -> Dict[int, TFN]:
-    return {
-        1: TFN(0, 0, 25),
-        2: TFN(15, 30, 45),
-        3: TFN(40, 50, 60),
-        4: TFN(55, 70, 85),
-        5: TFN(75, 100, 100),
-    }
-
-def linear_tfn_map(levels: List[int]) -> Dict[int, TFN]:
-    """Generate linearly spaced TFNs over [0,100] for arbitrary integer levels."""
-    K = len(levels)
-    if K < 2:
-        raise ValueError("Need at least 2 levels for linear TFNs.")
-    centers = np.linspace(0, 100, K)
-    mapping: Dict[int, TFN] = {}
-    for i, lv in enumerate(levels):
-        b = float(centers[i])
-        if i == 0:
-            a = 0.0
-            c = float((centers[i] + centers[i+1]) / 2.0)
-        elif i == K-1:
-            a = float((centers[i-1] + centers[i]) / 2.0)
-            c = 100.0
-        else:
-            a = float((centers[i-1] + centers[i]) / 2.0)
-            c = float((centers[i]   + centers[i+1]) / 2.0)
-        a = max(0.0, min(a, b))
-        c = min(100.0, max(c, b))
-        mapping[lv] = TFN(a, b, c)
-    return mapping
-
-# ==============================
-# Fuzzy-Hybrid TOPSIS
-# ==============================
-def _normalize_fuzzy_matrix(matrix: List[List[TFN]], is_benefit: List[bool]) -> List[List[TFN]]:
-    m = len(matrix); n = len(matrix[0])
-    c_max = [max(matrix[i][j].c for i in range(m)) for j in range(n)]
-    a_min = [min(matrix[i][j].a for i in range(m)) for j in range(n)]
-    out: List[List[TFN]] = []
-    for i in range(m):
-        row: List[TFN] = []
-        for j in range(n):
-            x = matrix[i][j]
-            if is_benefit[j]:
-                denom = c_max[j] if c_max[j] != 0 else 1.0
-                row.append(TFN(x.a/denom, x.b/denom, x.c/denom))
-            else:
-                amin = a_min[j] if a_min[j] != 0 else 1.0
-                # Cost: inverse (Chen-style)
-                row.append(TFN(amin/x.c, amin/x.b if x.b != 0 else amin/1e-9, amin/x.a if x.a != 0 else amin/1e-9))
-        out.append(row)
-    return out
-
-def _apply_weights(matrix: List[List[TFN]], weights: List[float]) -> List[List[TFN]]:
-    m, n = len(matrix), len(matrix[0])
-    wsum = sum(weights)
-    if wsum <= 0:
-        raise ValueError("Weights must sum > 0.")
-    w = [wi/wsum for wi in weights]
-    return [[matrix[i][j].scale(w[j]) for j in range(n)] for i in range(m)]
-
-def _fuzzy_distance(x: TFN, y: TFN) -> float:
-    return math.sqrt((x.a - y.a)**2 + (x.b - y.b)**2 + (x.c - y.c)**2)
-
-def fuzzy_topsis_cc(matrix: List[List[TFN]], is_benefit: List[bool], weights: Optional[List[float]] = None) -> np.ndarray:
-    """Return closeness coefficients in [0,1]."""
-    m = len(matrix); n = len(matrix[0])
-    if weights is None:
-        weights = [1.0/n]*n
-    norm = _normalize_fuzzy_matrix(matrix, is_benefit)
-    vw = _apply_weights(norm, weights)
-    fpis: List[TFN] = []; fnis: List[TFN] = []
-    for j in range(n):
-        col = [vw[i][j] for i in range(m)]
-        fpis.append(TFN(max(x.a for x in col), max(x.b for x in col), max(x.c for x in col)))
-        fnis.append(TFN(min(x.a for x in col), min(x.b for x in col), min(x.c for x in col)))
-    d_plus = np.zeros(m); d_minus = np.zeros(m)
-    for i in range(m):
-        for j in range(n):
-            d_plus[i]  += _fuzzy_distance(vw[i][j], fpis[j])**2
-            d_minus[i] += _fuzzy_distance(vw[i][j], fnis[j])**2
-        d_plus[i]  = math.sqrt(d_plus[i])
-        d_minus[i] = math.sqrt(d_minus[i])
-    cc = d_minus / (d_plus + d_minus + 1e-12)
-    return np.clip(cc, 0, 1)
-
-# ==============================
-# Fuzzy C-Means (1D convenience)
-# ==============================
-def fuzzy_c_means(X: np.ndarray, c: int = 3, m: float = 2.0, max_iter: int = 200, tol: float = 1e-5, seed: int = 42):
-    rng = np.random.default_rng(seed)
-    n, p = X.shape
-    U = rng.uniform(0, 1, size=(c, n))
-    U /= U.sum(axis=0, keepdims=True)
-    for _ in range(max_iter):
-        um = U ** m
-        centers = (um @ X) / (um.sum(axis=1, keepdims=True) + 1e-12)
-        dist = np.zeros((c, n))
-        for k in range(c):
-            diff = X - centers[k]
-            dist[k] = np.sqrt((diff**2).sum(axis=1))
-        dist = np.fmax(dist, 1e-12)
-        U_new = 1.0 / (dist ** 2)
-        U_new /= U_new.sum(axis=0, keepdims=True)
-        if np.linalg.norm(U_new - U) < tol:
-            U = U_new
-            break
-        U = U_new
-    return U, centers  # U: (c,n), centers: (c,1)
-
-# ==============================
-# Labels: Apostle & Extended
-# ==============================
-def apostle_quadrants(x: np.ndarray, y: np.ndarray, x_thr: float, y_thr: float,
-                      AA: str, AB: str, BA: str, BB: str) -> List[str]:
-    out = []
-    for xi, yi in zip(x, y):
-        if   xi >= x_thr and yi >= y_thr: out.append(AA)
-        elif xi >= x_thr and yi <  y_thr: out.append(AB)
-        elif xi <  x_thr and yi >= y_thr: out.append(BA)
-        else:                             out.append(BB)
-    return out
-
-def extended_3x3_labels(u_x: np.ndarray, u_y: np.ndarray,
-                        names_x=("LowX","MidX","HighX"),
-                        names_y=("LowY","MidY","HighY")) -> List[str]:
-    ix = u_x.argmax(axis=0); iy = u_y.argmax(axis=0)
-    mapx = {0:names_x[0], 1:names_x[1], 2:names_x[2]}
-    mapy = {0:names_y[0], 1:names_y[1], 2:names_y[2]}
-    return [f"{mapx[i]}|{mapy[j]}" for i, j in zip(ix, iy)]
-
-# ==============================
-# Pipeline helpers
-# ==============================
-def df_to_tfn_matrix(df: pd.DataFrame, cols: List[str], tfn_map: Dict[int, TFN], levels: List[int]) -> List[List[TFN]]:
-    level_set = set(levels)
-    for c in cols:
-        vals = pd.unique(df[c].dropna())
-        if not set(map(int, vals)).issubset(level_set):
-            raise ValueError(f"Column '{c}' has values outside scale {sorted(level_set)}.")
-    m = df.shape[0]
-    mat: List[List[TFN]] = []
-    for i in range(m):
-        row: List[TFN] = []
-        for c in cols:
-            v = df.iloc[i][c]
-            if pd.isna(v):
-                raise ValueError(f"NaN at row {i}, column '{c}'. Please impute/remove NA.")
-            row.append(tfn_map[int(v)])
-        mat.append(row)
-    return mat
-
-def run_latent_index(df: pd.DataFrame, items: List[str], tfn_map: Dict[int, TFN], levels: List[int],
-                     is_benefit: Optional[List[bool]] = None, weights: Optional[List[float]] = None) -> np.ndarray:
-    if is_benefit is None:
-        is_benefit = [True] * len(items)
-    matrix = df_to_tfn_matrix(df, items, tfn_map, levels)
-    return fuzzy_topsis_cc(matrix, is_benefit=is_benefit, weights=weights)
-
-def run_pipeline(df: pd.DataFrame,
-                 latents: Dict[str, List[str]],
-                 tfn_map: Dict[int, TFN], levels: List[int],
-                 is_benefit_by_latent: Optional[Dict[str, List[bool]]] = None,
-                 weights_by_latent: Optional[Dict[str, List[float]]] = None,
-                 fcm_c: int = 3, fcm_m: float = 2.0,
-                 thresholds: Tuple[float, float] = (0.5, 0.5),
-                 quad_labels: Tuple[str, str, str, str] = ("Apostles","Mercenaries","Hostages","Defectors"),
-                 seed: int = 42) -> Dict[str, Any]:
-
-    names = list(latents.keys())
-    idx: Dict[str, np.ndarray] = {}
-    U_by: Dict[str, np.ndarray] = {}
-    C_by: Dict[str, np.ndarray] = {}
-
-    for nm in names:
-        items = latents[nm]
-        bene = None if (is_benefit_by_latent is None or nm not in is_benefit_by_latent) else is_benefit_by_latent[nm]
-        w    = None if (weights_by_latent     is None or nm not in weights_by_latent)     else weights_by_latent[nm]
-        z = run_latent_index(df, items, tfn_map, levels, bene, w)
-        z = np.clip(z, 0, 1)
-        idx[nm] = z
-        U, C = fuzzy_c_means(z.reshape(-1,1), c=fcm_c, m=fcm_m, seed=seed)
-        U_by[nm] = U
-        C_by[nm] = C
-
-    classic = None; extended = None
-    if len(names) >= 2:
-        xnm, ynm = names[0], names[1]
-        AA, AB, BA, BB = quad_labels
-        classic = apostle_quadrants(idx[xnm], idx[ynm], thresholds[0], thresholds[1], AA, AB, BA, BB)
-        if U_by[xnm].shape[0] == 3 and U_by[ynm].shape[0] == 3:
-            def reorder(u: np.ndarray, c: np.ndarray) -> np.ndarray:
-                order = np.argsort(c[:,0]); return u[order]
-            ux = reorder(U_by[xnm], C_by[xnm])
-            uy = reorder(U_by[ynm], C_by[ynm])
-            extended = extended_3x3_labels(ux, uy)
-
-    return {"idx": idx, "U": U_by, "C": C_by, "classic": classic, "extended": extended}
-
-# ==============================
-# UI
-# ==============================
-st.set_page_config(page_title="Fuzzy-Hybrid TOPSIS + ECO-Apostle", layout="wide")
 st.title("Latent Variables via Fuzzy-Hybrid TOPSIS + ECO-Extended Apostle")
 
-with st.sidebar:
-    st.header("1) Data")
-    up = st.file_uploader("CSV or Excel", type=["csv","xlsx"])
-    sep = st.text_input("CSV separator (if CSV)", value=",")
-    sheet = st.text_input("Excel sheet name (optional)", value="")
-    df = None
-    if up:
-        try:
-            if up.name.lower().endswith(".csv"):
-                df = pd.read_csv(up, sep=sep)
-            else:
-                df = pd.read_excel(up, sheet_name=sheet if sheet else 0)
-            st.success(f"Loaded: {df.shape[0]} rows × {df.shape[1]} columns.")
-        except Exception as e:
-            st.error(f"Read error: {e}")
+# Sidebar uploader
+st.sidebar.header("1) Data")
+uploaded_file = st.sidebar.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
+sep = st.sidebar.text_input("CSV separator (default=,)", value=",")
 
-    st.header("2) Scale & TFNs")
-    sc_choice = st.selectbox(
-        "Scale type",
-        ["Likert 1–4 (preset)", "Likert 1–5 (preset)", "Arbitrary scale (linear TFNs)", "Arbitrary scale (manual TFNs)"]
-    )
-    levels: List[int] = []
-    tfn_map: Dict[int, TFN] = {}
-
-    if sc_choice.startswith("Likert 1–4"):
-        levels = [1,2,3,4]; tfn_map = likert4_default_map()
-    elif sc_choice.startswith("Likert 1–5"):
-        levels = [1,2,3,4,5]; tfn_map = likert5_default_map()
-    else:
-        levels_str = st.text_input("Levels (e.g., 1,2,3,...,10)", value="1,2,3,4,5")
-        try:
-            levels = sorted(list({int(x.strip()) for x in levels_str.split(",") if x.strip() != ""}))
-        except:
-            levels = []
-            st.warning("Check the levels format.")
-        if levels:
-            if "linear" in sc_choice.lower():
-                try:
-                    tfn_map = linear_tfn_map(levels)
-                except Exception as e:
-                    st.error(f"Could not generate linear TFNs: {e}")
-            else:
-                st.caption("Enter manual TFNs (a,b, c) for each level:")
-                tfn_map = {}
-                for lv in levels:
-                    abctxt = st.text_input(f"Level {lv} TFN (a,b,c)", value="0,0,25" if lv == levels[0] else "", key=f"tfn_{lv}")
-                    try:
-                        a,b,c = [float(x.strip()) for x in abctxt.split(",")]
-                        tfn_map[lv] = TFN(a,b,c)
-                    except:
-                        pass
-
-    if tfn_map:
-        with st.expander("Show TFNs"):
-            tfndf = pd.DataFrame([{"level": lv, "a": t.a, "b": t.b, "c": t.c} for lv, t in sorted(tfn_map.items())])
-            st.dataframe(tfndf, use_container_width=True)
-
-    st.header("3) Latent variables (pick items from your file)")
-    latents: Dict[str, List[str]] = {}
-    is_benefit_by: Dict[str, List[bool]] = {}
-    weights_by: Dict[str, List[float]] = {}
-    if df is not None and len(df.columns) > 0 and levels and tfn_map:
-        all_cols = list(df.columns)
-        n_lat = st.number_input("How many latent variables?", min_value=1, max_value=12, value=2, step=1)
-        for i in range(int(n_lat)):
-            st.subheader(f"Latent #{i+1}")
-            lname = st.text_input(f"Latent name #{i+1}", value=f"Lat{i+1}", key=f"lname_{i}")
-            sel = st.multiselect(f"Items/columns for {lname}", all_cols, key=f"lcols_{i}")
-            latents[lname] = sel
-            bc_list, w_list = [], []
-            for c in sel:
-                c1, c2 = st.columns(2)
-                with c1:
-                    bc = st.selectbox(f"{c}: Benefit or Cost", ["Benefit","Cost"], key=f"bc_{i}_{c}")
-                    bc_list.append(bc == "Benefit")
-                with c2:
-                    w = st.number_input(f"Weight for {c}", value=1.0, step=0.1, key=f"w_{i}_{c}")
-                    w_list.append(float(w))
-            is_benefit_by[lname] = bc_list if sel else []
-            weights_by[lname] = w_list if sel else []
-
-    st.header("4) Clustering & thresholds")
-    fcm_c = st.number_input("FCM clusters per latent (c)", min_value=2, max_value=6, value=3, step=1)
-    fcm_m = st.number_input("Fuzziness m", min_value=1.1, max_value=5.0, value=2.0, step=0.1)
-    x_thr = st.number_input("Threshold X (1st latent)", min_value=0.0, max_value=1.0, value=0.5, step=0.01)
-    y_thr = st.number_input("Threshold Y (2nd latent)", min_value=0.0, max_value=1.0, value=0.5, step=0.01)
-
-    st.header("5) Custom quadrant names (Apostle)")
-    AA = st.text_input("x≥Xthr & y≥Ythr", value="Apostles")
-    AB = st.text_input("x≥Xthr & y<Ythr", value="Mercenaries")
-    BA = st.text_input("x<Xthr & y≥Ythr", value="Hostages")
-    BB = st.text_input("x<Xthr & y<Ythr", value="Defectors")
-
-run_btn = st.button("▶ Run analysis")
-
-# ==============================
-# Run
-# ==============================
-if run_btn:
+df = None
+if uploaded_file is not None:
     try:
-        if df is None:
-            st.error("Please upload a data file first.")
-            st.stop()
-        if not levels or not tfn_map:
-            st.error("Please define the scale and TFNs.")
-            st.stop()
-        lat_valid = {k: v for k, v in (latents or {}).items() if v}
-        if len(lat_valid) == 0:
-            st.error("Define at least one latent variable with items.")
-            st.stop()
-
-        out = run_pipeline(
-            df=df,
-            latents=lat_valid,
-            tfn_map=tfn_map,
-            levels=levels,
-            is_benefit_by_latent=is_benefit_by,
-            weights_by_latent=weights_by,
-            fcm_c=int(fcm_c),
-            fcm_m=float(fcm_m),
-            thresholds=(float(x_thr), float(y_thr)),
-            quad_labels=(AA, AB, BA, BB),
-        )
-
-        names = list(lat_valid.keys())
-        res = pd.DataFrame({f"idx_{nm}": out["idx"][nm] for nm in names})
-        if len(names) >= 2:
-            res["Quadrant4"] = out["classic"]
-            if out["extended"] is not None:
-                res["Extended3x3"] = out["extended"]
-
-        # Add Low/Mid/High memberships when c==3
-        for nm in names:
-            U = out["U"][nm]; C = out["C"][nm]
-            if U.shape[0] == 3:
-                order = np.argsort(C[:,0])
-                for k, lab in enumerate(["Low","Mid","High"]):
-                    res[f"{lab}_{nm}"] = U[order][k]
-
-        st.success("Analysis completed.")
-        st.dataframe(res, use_container_width=True)
-
-        # Download CSV
-        st.download_button(
-            "⬇ Download results CSV",
-            data=res.to_csv(index=False).encode("utf-8"),
-            file_name="fuzzy_outputs.csv",
-            mime="text/csv"
-        )
-
-        # Scatter (first two latents)
-        if len(names) >= 2:
-            x = res[f"idx_{names[0]}"].to_numpy()
-            y = res[f"idx_{names[1]}"].to_numpy()
-            fig = plt.figure()
-            plt.scatter(x, y)              # do not set custom styles/colors
-            plt.axvline(float(x_thr))
-            plt.axhline(float(y_thr))
-            plt.xlabel(f"TOPSIS index ({names[0]})")
-            plt.ylabel(f"TOPSIS index ({names[1]})")
-            plt.title("Apostle / Extended from latent variables")
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
-            plt.close(fig)
-            st.image(buf.getvalue(), caption="Scatter with thresholds")
-            st.download_button(
-                "⬇ Download scatter PNG",
-                data=buf.getvalue(),
-                file_name="fuzzy_scatter.png",
-                mime="image/png"
-            )
-
+        if uploaded_file.name.lower().endswith(".csv"):
+            df = pd.read_csv(uploaded_file, sep=sep)
+        else:
+            df = pd.read_excel(uploaded_file)
+        st.sidebar.success(f"Loaded: {df.shape[0]} rows × {df.shape[1]} columns.")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.sidebar.error(f"Error: {e}")
+
+# Central uploader (for mobile convenience)
+central_up = st.file_uploader("Upload CSV or Excel here (optional)", type=["csv","xlsx"], key="central_up")
+if central_up is not None:
+    try:
+        if central_up.name.lower().endswith(".csv"):
+            df = pd.read_csv(central_up)
+        else:
+            df = pd.read_excel(central_up, sheet_name=0)
+        st.success(f"Loaded (central): {df.shape[0]} rows × {df.shape[1]} columns.")
+    except Exception as e:
+        st.error(f"Read error (central): {e}")
+
+if df is not None:
+    st.write("Preview of uploaded data:")
+    st.dataframe(df.head())
+
+    st.sidebar.header("2) Latent Variables")
+    items = list(df.columns)
+    num_latent = st.sidebar.number_input("Number of latent variables", 1, 5, 2)
+    latent_defs = {}
+    for i in range(int(num_latent)):
+        st.sidebar.subheader(f"Latent {i+1}")
+        sel = st.sidebar.multiselect(f"Select items for Latent {i+1}", items, key=f"sel_{i}")
+        if sel:
+            weights = [st.sidebar.number_input(f"Weight for {c}", 0.0, 10.0, 1.0, key=f"w_{i}_{c}") for c in sel]
+            latent_defs[f"Latent_{i+1}"] = (sel, weights)
+
+    if st.button("Run analysis"):
+        latent_scores = pd.DataFrame()
+        for k,(sel,weights) in latent_defs.items():
+            sub = df[sel].astype(float)
+            w = np.array(weights)/np.sum(weights)
+            latent_scores[k] = np.dot(sub, w)
+        st.write("Latent variable scores:")
+        st.dataframe(latent_scores.head())
+
+        # Simple Apostle quadrant split
+        st.header("ECO-Extended Apostle Classification")
+        x_latent = st.selectbox("Choose latent for X axis", latent_scores.columns)
+        y_latent = st.selectbox("Choose latent for Y axis", latent_scores.columns)
+        thr_x = st.slider("Threshold X", float(latent_scores[x_latent].min()), float(latent_scores[x_latent].max()), float(latent_scores[x_latent].mean()))
+        thr_y = st.slider("Threshold Y", float(latent_scores[y_latent].min()), float(latent_scores[y_latent].max()), float(latent_scores[y_latent].mean()))
+
+        q_names = {}
+        for q in ["Q1 (high-high)","Q2 (low-high)","Q3 (low-low)","Q4 (high-low)"]:
+            q_names[q] = st.text_input(f"Name for {q}", value=q)
+
+        def classify(row):
+            if row[x_latent]>=thr_x and row[y_latent]>=thr_y: return q_names["Q1 (high-high)"]
+            if row[x_latent]<thr_x and row[y_latent]>=thr_y: return q_names["Q2 (low-high)"]
+            if row[x_latent]<thr_x and row[y_latent]<thr_y: return q_names["Q3 (low-low)"]
+            return q_names["Q4 (high-low)"]
+        latent_scores["Quadrant"] = latent_scores.apply(classify, axis=1)
+        st.write("Classification results:")
+        st.dataframe(latent_scores)
+else:
+    st.info("Please upload a data file first.")
