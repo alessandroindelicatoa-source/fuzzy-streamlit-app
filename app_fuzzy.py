@@ -49,8 +49,8 @@ def linear_tfn_map(levels: List[int]) -> Dict[int, TFN]:
         else:
             a = float((centers[i-1] + centers[i]) / 2.0)
             c = float((centers[i]   + centers[i+1]) / 2.0)
-        a = max(0.0, min(a, b))
-        c = min(100.0, max(c, b))
+        a = max(0.0, min(a, b))   # keep a <= b
+        c = min(100.0, max(c, b)) # keep b <= c
         mapping[lv] = TFN(a, b, c)
     return mapping
 
@@ -71,6 +71,7 @@ def _normalize_fuzzy_matrix(matrix: List[List[TFN]], is_benefit: List[bool]) -> 
                 row.append(TFN(x.a/denom, x.b/denom, x.c/denom))
             else:
                 amin = a_min[j] if a_min[j] != 0 else 1.0
+                # Chen-style inverse for cost criteria
                 row.append(TFN(amin/x.c, amin/(x.b if x.b!=0 else 1e-9), amin/(x.a if x.a!=0 else 1e-9)))
         out.append(row)
     return out
@@ -87,7 +88,7 @@ def _fuzzy_distance(x: TFN, y: TFN) -> float:
     return math.sqrt((x.a - y.a)**2 + (x.b - y.b)**2 + (x.c - y.c)**2)
 
 def fuzzy_topsis_cc(matrix: List[List[TFN]], is_benefit: List[bool], weights: Optional[List[float]] = None) -> np.ndarray:
-    """Return closeness coefficients in [0,1]."""
+    """Return closeness coefficients in [0,1] for each row (alternative)."""
     m = len(matrix); n = len(matrix[0])
     if weights is None:
         weights = [1.0/n]*n
@@ -109,6 +110,7 @@ def fuzzy_topsis_cc(matrix: List[List[TFN]], is_benefit: List[bool], weights: Op
     return np.clip(cc, 0, 1)
 
 def df_to_tfn_matrix(df: pd.DataFrame, cols: List[str], tfn_map: Dict[int, TFN], levels: List[int]) -> List[List[TFN]]:
+    """Build fuzzy decision matrix (rows: alternatives/rows; cols: items)."""
     level_set = set(levels)
     for c in cols:
         vals = pd.unique(df[c].dropna())
@@ -131,8 +133,8 @@ def df_to_tfn_matrix(df: pd.DataFrame, cols: List[str], tfn_map: Dict[int, TFN],
 def eco_fuzzy_sets_4(val: float) -> Tuple[float,float,float,float]:
     """Memberships to (Low, MedLow, MedHigh, High) over [0,1]. Triangular/shoulder MFs."""
     low, medlow, medhigh, high = 0,0,0,0
-    if val <= 0.33: low = 1 - val/0.33
-    if val >= 0.66: high = (val-0.66)/0.34 if val <=1 else 1
+    if val <= 0.33: low = 1 - val/0.33           # shoulder from 0 to 0.33
+    if val >= 0.66: high = (val-0.66)/0.34 if val <=1 else 1  # shoulder 0.66 to 1
     if 0 <= val <= 0.66: medlow = 1 - abs(val-0.33)/0.33
     if 0.33 <= val <= 1: medhigh = 1 - abs(val-0.66)/0.34
     return (max(low,0), max(medlow,0), max(medhigh,0), max(high,0))
@@ -313,7 +315,7 @@ if run_btn:
             st.error("Please choose items for TWO latent variables (X and Y).")
             st.stop()
 
-        # Compute indices with Fuzzy-Hybrid TOPSIS
+        # Compute indices with Fuzzy-Hybrid TOPSIS (individual level)
         idx: Dict[str, np.ndarray] = {}
         for nm, items in latents.items():
             bene = is_benefit_by.get(nm, [True]*len(items))
@@ -326,7 +328,7 @@ if run_btn:
         xnm, ynm = names[0], names[1]
         x, y = idx[xnm], idx[ynm]
 
-        # Latent indices table
+        # Latent indices table (individual)
         res = pd.DataFrame({f"idx_{xnm}": x, f"idx_{ynm}": y})
         st.subheader("Fuzzy-Hybrid TOPSIS results (latent indices)")
         st.dataframe(res, use_container_width=True)
@@ -355,15 +357,15 @@ if run_btn:
         else:
             res["Apostle_Extended4x4"] = base16
 
-        st.subheader("Final classifications")
+        st.subheader("Final classifications (individual)")
         st.dataframe(res, use_container_width=True)
         st.download_button("⬇ Download full results (CSV)",
                            data=res.to_csv(index=False).encode("utf-8"),
                            file_name="fuzzy_apostle_results.csv",
                            mime="text/csv")
 
-        # ---- Plots ----
-        st.header("5) Plots")
+        # ---- Plots (individual) ----
+        st.header("5) Plots (individual)")
 
         # Classic 2×2
         st.subheader("Apostle Classic (2×2)")
@@ -394,6 +396,69 @@ if run_btn:
         st.download_button("⬇ Download 4×4 plot (PNG)", data=buf2.getvalue(),
                            file_name="eco_extended_4x4.png", mime="image/png")
         plt.close(fig2)
+
+        # ---- Aggregated by categories ----
+        st.header("6) Aggregated results by categories")
+        group_cols = st.multiselect(
+            "Select columns to group by (e.g., gender, country)",
+            options=list(df.columns),
+            key="group_cols"
+        )
+
+        if group_cols:
+            agg_list = []
+            grouped = df.groupby(group_cols, dropna=False)
+            for keys, subdf in grouped:
+                row_out: Dict[str, object] = {}
+
+                # Keep grouping keys
+                if isinstance(keys, tuple):
+                    for k, v in zip(group_cols, keys):
+                        row_out[k] = v
+                else:
+                    row_out[group_cols[0]] = keys
+
+                # Recompute latent indices within subgroup
+                idx_group: Dict[str, np.ndarray] = {}
+                for nm, items in latents.items():
+                    bene_g = is_benefit_by.get(nm, [True]*len(items))
+                    w_g    = weights_by.get(nm, [1.0]*len(items))
+                    mat_g  = df_to_tfn_matrix(subdf, items, tfn_map, levels)
+                    z_g    = fuzzy_topsis_cc(mat_g, is_benefit=bene_g, weights=w_g)
+                    idx_group[nm] = z_g
+
+                # Group-level mean indices
+                gx, gy = float(idx_group[xnm].mean()), float(idx_group[ynm].mean())
+                row_out[f"idx_{xnm}"] = gx
+                row_out[f"idx_{ynm}"] = gy
+
+                # Classic classification at group level (using same x_thr/y_thr computed on full sample)
+                if gx >= x_thr and gy >= y_thr:
+                    row_out["Classic_Group"] = AA
+                elif gx >= x_thr and gy < y_thr:
+                    row_out["Classic_Group"] = AB
+                elif gx < x_thr and gy >= y_thr:
+                    row_out["Classic_Group"] = BA
+                else:
+                    row_out["Classic_Group"] = BB
+
+                # ECO-Extended classification at group level
+                lx = np.array(eco_fuzzy_sets_4(gx)); ix = int(lx.argmax())
+                ly = np.array(eco_fuzzy_sets_4(gy)); iy = int(ly.argmax())
+                if use_custom_16:
+                    row_out["Extended4x4_Group"] = custom16.get((ix,iy), f"{x_names[ix]}|{y_names[iy]}")
+                else:
+                    row_out["Extended4x4_Group"] = f"{x_names[ix]}|{y_names[iy]}"
+
+                agg_list.append(row_out)
+
+            agg_df = pd.DataFrame(agg_list)
+            st.subheader("Aggregated latent indices & classifications")
+            st.dataframe(agg_df, use_container_width=True)
+            st.download_button("⬇ Download aggregated results (CSV)",
+                               data=agg_df.to_csv(index=False).encode("utf-8"),
+                               file_name="fuzzy_topsis_aggregated.csv",
+                               mime="text/csv")
 
     except Exception as e:
         st.error(f"Error: {e}")
