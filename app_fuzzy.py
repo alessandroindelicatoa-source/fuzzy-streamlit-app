@@ -266,9 +266,9 @@ if df is not None and len(df.columns) > 0 and levels and tfn_map:
         is_benefit_by = {lname_x: bc_x, lname_y: bc_y}
         weights_by = {lname_x: w_x, lname_y: w_y}
 
-    st.subheader("2b) Optional: aggregate and count by categories")
+    st.subheader("2b) Optional: aggregate by categories (means only)")
     group_cols = st.multiselect(
-        "Select columns to group / count by (e.g., gender, country, segment)",
+        "Select columns to group by (e.g., gender, country, segment)",
         options=all_cols,
         key="group_cols_select"
     )
@@ -399,7 +399,7 @@ if run_btn:
                            file_name="eco_extended_4x4.png", mime="image/png")
         plt.close(fig2)
 
-        # ---- Aggregated by categories (means per group) ----
+        # ---- Aggregated by categories (means only) ----
         st.header("6) Aggregated results by categories (means)")
         if group_cols:
             agg_list = []
@@ -446,67 +446,28 @@ if run_btn:
         else:
             st.info("No grouping columns selected.")
 
-        # ---- Counts by category & quadrant (Classic and ECO-Extended) ----
-        st.header("7) Counts by category and quadrant")
-        if group_cols:
-            # Build full individual results joined to chosen group columns
-            indiv = df[group_cols].copy()
-            indiv["Classic"] = res["Apostle_Classic"].values
-            indiv["Extended4x4"] = res["Apostle_Extended4x4"].values
-
-            # For each grouping column individually
-            for gcol in group_cols:
-                st.subheader(f"Counts by {gcol} → Classic quadrants")
-                tbl_c = pd.crosstab(indiv[gcol], indiv["Classic"]).sort_index()
-                st.dataframe(tbl_c, use_container_width=True)
-                st.download_button(f"⬇ Download counts Classic by {gcol} (CSV)",
-                                   data=tbl_c.to_csv().encode("utf-8"),
-                                   file_name=f"counts_classic_by_{gcol}.csv",
-                                   mime="text/csv")
-
-                st.caption("Percentages within each category (rows sum to 100%).")
-                pct_c = (tbl_c.div(tbl_c.sum(axis=1).replace(0, np.nan), axis=0) * 100).round(2)
-                st.dataframe(pct_c, use_container_width=True)
-                st.download_button(f"⬇ Download percentages Classic by {gcol} (CSV)",
-                                   data=pct_c.to_csv().encode("utf-8"),
-                                   file_name=f"percent_classic_by_{gcol}.csv",
-                                   mime="text/csv")
-
-                st.subheader(f"Counts by {gcol} → ECO-Extended 4×4")
-                tbl_e = pd.crosstab(indiv[gcol], indiv["Extended4x4"]).sort_index()
-                st.dataframe(tbl_e, use_container_width=True)
-                st.download_button(f"⬇ Download counts Extended by {gcol} (CSV)",
-                                   data=tbl_e.to_csv().encode("utf-8"),
-                                   file_name=f"counts_extended_by_{gcol}.csv",
-                                   mime="text/csv")
-
-                st.caption("Percentages within each category (rows sum to 100%).")
-                pct_e = (tbl_e.div(tbl_e.sum(axis=1).replace(0, np.nan), axis=0) * 100).round(2)
-                st.dataframe(pct_e, use_container_width=True)
-                st.download_button(f"⬇ Download percentages Extended by {gcol} (CSV)",
-                                   data=pct_e.to_csv().encode("utf-8"),
-                                   file_name=f"percent_extended_by_{gcol}.csv",
-                                   mime="text/csv")
-
-            # Optionally, counts by the full combination of selected group columns
-            if len(group_cols) > 1:
-                st.subheader(f"Counts by {' + '.join(group_cols)} → Classic")
-                comb_c = indiv.groupby(group_cols + ["Classic"]).size().unstack(fill_value=0)
-                st.dataframe(comb_c, use_container_width=True)
-                st.download_button("⬇ Download counts Classic by combination (CSV)",
-                                   data=comb_c.to_csv().encode("utf-8"),
-                                   file_name="counts_classic_by_combination.csv",
-                                   mime="text/csv")
-
-                st.subheader(f"Counts by {' + '.join(group_cols)} → ECO-Extended 4×4")
-                comb_e = indiv.groupby(group_cols + ["Extended4x4"]).size().unstack(fill_value=0)
-                st.dataframe(comb_e, use_container_width=True)
-                st.download_button("⬇ Download counts Extended by combination (CSV)",
-                                   data=comb_e.to_csv().encode("utf-8"),
-                                   file_name="counts_extended_by_combination.csv",
-                                   mime="text/csv")
-        else:
-            st.info("No grouping columns selected for counts (choose them in section 2b).")
+        # ---- Overall counts by quadrant (no breakdown by variables) ----
+        st.header("7) Overall counts by quadrant")
+        # Classic
+        st.subheader("Classic (2×2) — counts and percentages")
+        cnt_classic = res["Apostle_Classic"].value_counts().sort_index()
+        pct_classic = (cnt_classic / cnt_classic.sum() * 100).round(2)
+        tbl_classic = pd.DataFrame({"count": cnt_classic, "percent": pct_classic})
+        st.dataframe(tbl_classic, use_container_width=True)
+        st.download_button("⬇ Download Classic counts (CSV)",
+                           data=tbl_classic.to_csv().encode("utf-8"),
+                           file_name="overall_counts_classic.csv",
+                           mime="text/csv")
+        # ECO-Extended
+        st.subheader("ECO-Extended (4×4) — counts and percentages")
+        cnt_ext = res["Apostle_Extended4x4"].value_counts().sort_index()
+        pct_ext = (cnt_ext / cnt_ext.sum() * 100).round(2)
+        tbl_ext = pd.DataFrame({"count": cnt_ext, "percent": pct_ext})
+        st.dataframe(tbl_ext, use_container_width=True)
+        st.download_button("⬇ Download Extended counts (CSV)",
+                           data=tbl_ext.to_csv().encode("utf-8"),
+                           file_name="overall_counts_extended.csv",
+                           mime="text/csv")
 
     except Exception as e:
         st.error(f"Error: {e}")
