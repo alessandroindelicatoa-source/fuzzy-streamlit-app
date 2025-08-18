@@ -133,8 +133,8 @@ def df_to_tfn_matrix(df: pd.DataFrame, cols: List[str], tfn_map: Dict[int, TFN],
 def eco_fuzzy_sets_4(val: float) -> Tuple[float,float,float,float]:
     """Memberships to (Low, MedLow, MedHigh, High) over [0,1]. Triangular/shoulder MFs."""
     low, medlow, medhigh, high = 0,0,0,0
-    if val <= 0.33: low = 1 - val/0.33           # shoulder from 0 to 0.33
-    if val >= 0.66: high = (val-0.66)/0.34 if val <=1 else 1  # shoulder 0.66 to 1
+    if val <= 0.33: low = 1 - val/0.33
+    if val >= 0.66: high = (val-0.66)/0.34 if val <=1 else 1
     if 0 <= val <= 0.66: medlow = 1 - abs(val-0.33)/0.33
     if 0.33 <= val <= 1: medhigh = 1 - abs(val-0.66)/0.34
     return (max(low,0), max(medlow,0), max(medhigh,0), max(high,0))
@@ -230,12 +230,12 @@ if tfn_map:
                        data=tfndf.to_csv(index=False).encode("utf-8"),
                        file_name="tfn_mapping.csv", mime="text/csv")
 
-# ---- Latents & grouping columns ----
+# ---- Latents & independent aggregation columns ----
 st.header("2) Select items for the TWO latent variables")
 latents: Dict[str, List[str]] = {}
 is_benefit_by: Dict[str, List[bool]] = {}
 weights_by: Dict[str, List[float]] = {}
-group_cols: List[str] = []
+agg_cols_indep: List[str] = []
 
 if df is not None and len(df.columns) > 0 and levels and tfn_map:
     all_cols = list(df.columns)
@@ -251,6 +251,7 @@ if df is not None and len(df.columns) > 0 and levels and tfn_map:
             bc_x.append(st.selectbox(f"{c}: Benefit/Cost (X)", ["Benefit","Cost"], key=f"bc_x_{c}") == "Benefit")
         with c2:
             w_x.append(st.number_input(f"Weight for {c} (X)", value=1.0, step=0.1, key=f"w_x_{c}"))
+
     # Latent Y
     lname_y = st.text_input("Latent Y name", value="LatY")
     sel_y = st.multiselect(f"Items for {lname_y}", all_cols, key="sel_lat_y")
@@ -261,16 +262,17 @@ if df is not None and len(df.columns) > 0 and levels and tfn_map:
             bc_y.append(st.selectbox(f"{c}: Benefit/Cost (Y)", ["Benefit","Cost"], key=f"bc_y_{c}") == "Benefit")
         with c2:
             w_y.append(st.number_input(f"Weight for {c} (Y)", value=1.0, step=0.1, key=f"w_y_{c}"))
+
     if sel_x and sel_y:
         latents = {lname_x: sel_x, lname_y: sel_y}
         is_benefit_by = {lname_x: bc_x, lname_y: bc_y}
         weights_by = {lname_x: w_x, lname_y: w_y}
 
-    st.subheader("2b) Optional: aggregate by categories (means only)")
-    group_cols = st.multiselect(
-        "Select columns to group by (e.g., gender, country, segment)",
+    st.subheader("2b) Aggregate Fuzzy-Hybrid TOPSIS by columns (independently)")
+    agg_cols_indep = st.multiselect(
+        "Pick columns to aggregate separately (not jointly).",
         options=all_cols,
-        key="group_cols_select"
+        key="agg_cols_indep"
     )
 
 # ---- Manual quadrant naming ----
@@ -321,7 +323,7 @@ if run_btn:
         if len(latents) != 2:
             st.error("Please choose items for TWO latent variables (X and Y)."); st.stop()
 
-        # Compute indices with Fuzzy-Hybrid TOPSIS (individual level)
+        # ==== Individual indices with Fuzzy-Hybrid TOPSIS ====
         idx: Dict[str, np.ndarray] = {}
         for nm, items in latents.items():
             bene = is_benefit_by.get(nm, [True]*len(items))
@@ -334,7 +336,7 @@ if run_btn:
         xnm, ynm = names[0], names[1]
         x, y = idx[xnm], idx[ynm]
 
-        # Latent indices table (individual)
+        # Table of latent indices
         res = pd.DataFrame({f"idx_{xnm}": x, f"idx_{ynm}": y})
         st.subheader("Fuzzy-Hybrid TOPSIS results (latent indices)")
         st.dataframe(res, use_container_width=True)
@@ -343,7 +345,7 @@ if run_btn:
                            file_name="latent_indices_fuzzy_topsis.csv",
                            mime="text/csv")
 
-        # Classic thresholds (mean or median)
+        # Classic thresholds (mean/median of whole sample)
         x_thr = float(np.mean(x)) if thr_mode == "Mean" else float(np.median(x))
         y_thr = float(np.mean(y)) if thr_mode == "Mean" else float(np.median(y))
 
@@ -369,7 +371,7 @@ if run_btn:
                            file_name="fuzzy_apostle_results.csv",
                            mime="text/csv")
 
-        # ---- Plots (individual) ----
+        # ==== Plots ====
         st.header("5) Plots (individual)")
         # Classic 2×2
         st.subheader("Apostle Classic (2×2)")
@@ -399,70 +401,78 @@ if run_btn:
                            file_name="eco_extended_4x4.png", mime="image/png")
         plt.close(fig2)
 
-        # ---- Aggregated by categories (means only) ----
-        st.header("6) Aggregated results by categories (means)")
-        if group_cols:
-            agg_list = []
-            grouped = df.groupby(group_cols, dropna=False)
-            for keys, subdf in grouped:
-                row_out: Dict[str, object] = {}
-                # keys
-                if isinstance(keys, tuple):
-                    for k, v in zip(group_cols, keys):
-                        row_out[k] = v
-                else:
-                    row_out[group_cols[0]] = keys
-                # recompute latent indices for subgroup
-                idx_group: Dict[str, np.ndarray] = {}
-                for nm, items in latents.items():
-                    bene_g = is_benefit_by.get(nm, [True]*len(items))
-                    w_g    = weights_by.get(nm, [1.0]*len(items))
-                    mat_g  = df_to_tfn_matrix(subdf, items, tfn_map, levels)
-                    z_g    = fuzzy_topsis_cc(mat_g, is_benefit=bene_g, weights=w_g)
-                    idx_group[nm] = z_g
-                gx, gy = float(idx_group[xnm].mean()), float(idx_group[ynm].mean())
-                row_out[f"idx_{xnm}"] = gx
-                row_out[f"idx_{ynm}"] = gy
-                # labels for the group centroid
-                if gx >= x_thr and gy >= y_thr:
-                    row_out["Classic_Group"] = AA
-                elif gx >= x_thr and gy < y_thr:
-                    row_out["Classic_Group"] = AB
-                elif gx < x_thr and gy >= y_thr:
-                    row_out["Classic_Group"] = BA
-                else:
-                    row_out["Classic_Group"] = BB
-                lx = np.array(eco_fuzzy_sets_4(gx)); ix = int(lx.argmax())
-                ly = np.array(eco_fuzzy_sets_4(gy)); iy = int(ly.argmax())
-                row_out["Extended4x4_Group"] = (custom16.get((ix,iy), f"{x_names[ix]}|{y_names[iy]}")
-                                                if use_custom_16 else f"{x_names[ix]}|{y_names[iy]}")
-                agg_list.append(row_out)
-            agg_df = pd.DataFrame(agg_list)
-            st.dataframe(agg_df, use_container_width=True)
-            st.download_button("⬇ Download aggregated means (CSV)",
-                               data=agg_df.to_csv(index=False).encode("utf-8"),
-                               file_name="fuzzy_topsis_aggregated_means.csv",
-                               mime="text/csv")
-        else:
-            st.info("No grouping columns selected.")
+        # ==== Independent aggregation by columns (means only, not joint) ====
+        st.header("6) Aggregated Fuzzy-Hybrid TOPSIS by columns (independently)")
+        if agg_cols_indep:
+            for gcol in agg_cols_indep:
+                st.subheader(f"Aggregate by {gcol} (independent)")
+                rows = []
+                for cat, subdf in df.groupby(gcol, dropna=False):
+                    row: Dict[str, object] = {gcol: cat}
+                    # recompute indices within subgroup
+                    gx_items = latents[xnm]; gy_items = latents[ynm]
+                    bene_x = is_benefit_by.get(xnm, [True]*len(gx_items))
+                    bene_y = is_benefit_by.get(ynm, [True]*len(gy_items))
+                    w_x = weights_by.get(xnm, [1.0]*len(gx_items))
+                    w_y = weights_by.get(ynm, [1.0]*len(gy_items))
 
-        # ---- Overall counts by quadrant (no breakdown by variables) ----
+                    z_x = fuzzy_topsis_cc(df_to_tfn_matrix(subdf, gx_items, tfn_map, levels),
+                                          is_benefit=bene_x, weights=w_x)
+                    z_y = fuzzy_topsis_cc(df_to_tfn_matrix(subdf, gy_items, tfn_map, levels),
+                                          is_benefit=bene_y, weights=w_y)
+
+                    gx, gy = float(np.mean(z_x)), float(np.mean(z_y))
+                    row[f"idx_{xnm}"] = gx
+                    row[f"idx_{ynm}"] = gy
+
+                    # labels for the subgroup centroid (use global thresholds)
+                    if gx >= x_thr and gy >= y_thr:
+                        row["Classic_Label"] = AA
+                    elif gx >= x_thr and gy < y_thr:
+                        row["Classic_Label"] = AB
+                    elif gx < x_thr and gy >= y_thr:
+                        row["Classic_Label"] = BA
+                    else:
+                        row["Classic_Label"] = BB
+
+                    lx = np.array(eco_fuzzy_sets_4(gx)); ix = int(lx.argmax())
+                    ly = np.array(eco_fuzzy_sets_4(gy)); iy = int(ly.argmax())
+                    row["Extended4x4_Label"] = (custom16.get((ix,iy), f"{x_names[ix]}|{y_names[iy]}")
+                                                if use_custom_16 else f"{x_names[ix]}|{y_names[iy]}")
+                    rows.append(row)
+
+                agg_one = pd.DataFrame(rows)
+                st.dataframe(agg_one, use_container_width=True)
+                st.download_button(f"⬇ Download aggregated by {gcol} (CSV)",
+                                   data=agg_one.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"fuzzy_topsis_aggregated_by_{gcol}.csv",
+                                   mime="text/csv")
+        else:
+            st.info("No columns selected for independent aggregation.")
+
+        # ==== Overall counts by quadrant (show all 4 and all 16 labels) ====
         st.header("7) Overall counts by quadrant")
-        # Classic
-        st.subheader("Classic (2×2) — counts and percentages")
-        cnt_classic = res["Apostle_Classic"].value_counts().sort_index()
-        pct_classic = (cnt_classic / cnt_classic.sum() * 100).round(2)
+
+        # Classic (ensure fixed order & zeros)
+        classic_order = [AA, AB, BA, BB]
+        cnt_classic = res["Apostle_Classic"].value_counts()
+        cnt_classic = cnt_classic.reindex(classic_order, fill_value=0)
+        pct_classic = (cnt_classic / max(1, cnt_classic.sum()) * 100).round(2)
         tbl_classic = pd.DataFrame({"count": cnt_classic, "percent": pct_classic})
+        st.subheader("Classic (2×2) — counts and percentages")
         st.dataframe(tbl_classic, use_container_width=True)
         st.download_button("⬇ Download Classic counts (CSV)",
                            data=tbl_classic.to_csv().encode("utf-8"),
                            file_name="overall_counts_classic.csv",
                            mime="text/csv")
-        # ECO-Extended
-        st.subheader("ECO-Extended (4×4) — counts and percentages")
-        cnt_ext = res["Apostle_Extended4x4"].value_counts().sort_index()
-        pct_ext = (cnt_ext / cnt_ext.sum() * 100).round(2)
+
+        # ECO-Extended (build full 16-grid label list & zeros)
+        all16 = [f"{x_names[ix]}|{y_names[iy]}" for iy in range(4) for ix in range(4)]
+        cnt_ext = res["Apostle_Extended4x4"].value_counts()
+        cnt_ext = cnt_ext.reindex(all16, fill_value=0)
+        pct_ext = (cnt_ext / max(1, cnt_ext.sum()) * 100).round(2)
         tbl_ext = pd.DataFrame({"count": cnt_ext, "percent": pct_ext})
+        st.subheader("ECO-Extended (4×4) — counts and percentages")
         st.dataframe(tbl_ext, use_container_width=True)
         st.download_button("⬇ Download Extended counts (CSV)",
                            data=tbl_ext.to_csv().encode("utf-8"),
