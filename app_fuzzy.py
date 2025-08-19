@@ -147,7 +147,7 @@ def apostle_quadrants(x: np.ndarray, y: np.ndarray, x_thr: float, y_thr: float,
 # Streamlit UI
 # =========================================
 st.set_page_config(page_title="Fuzzy-Hybrid TOPSIS + ECO-Extended 4×4", layout="wide")
-st.title("Latent Variables via Fuzzy-Hybrid TOPSIS → Apostle Classic (2×2) & ECO-Extended (4×4)")
+st.title("Fuzzy Quadrant Mapper")
 
 # ---- Upload data ----
 df = None
