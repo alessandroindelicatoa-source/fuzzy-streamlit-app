@@ -24,7 +24,6 @@ class TFN:
     def scale(self, w: float) -> "TFN":
         return TFN(self.a*w, self.b*w, self.c*w)
 
-# Default Likert mappings
 def likert4_default_map() -> Dict[int, TFN]:
     return {1: TFN(0,0,50), 2: TFN(30,50,70), 3: TFN(50,70,90), 4: TFN(70,100,100)}
 
@@ -32,452 +31,206 @@ def likert5_default_map() -> Dict[int, TFN]:
     return {1: TFN(0,0,25), 2: TFN(15,30,45), 3: TFN(40,50,60), 4: TFN(55,70,85), 5: TFN(75,100,100)}
 
 def linear_tfn_map(levels: List[int]) -> Dict[int, TFN]:
-    """Linearly spaced TFNs over [0,100] for arbitrary integer levels."""
     K = len(levels)
-    if K < 2:
-        raise ValueError("Need at least 2 levels for linear TFNs.")
-    centers = np.linspace(0, 100, K)
-    mapping: Dict[int, TFN] = {}
-    for i, lv in enumerate(levels):
+    centers = np.linspace(0,100,K)
+    mapping={}
+    for i,lv in enumerate(levels):
         b = float(centers[i])
-        if i == 0:
-            a = 0.0
-            c = float((centers[i] + centers[i+1]) / 2.0)
-        elif i == K-1:
-            a = float((centers[i-1] + centers[i]) / 2.0)
-            c = 100.0
-        else:
-            a = float((centers[i-1] + centers[i]) / 2.0)
-            c = float((centers[i]   + centers[i+1]) / 2.0)
-        a = max(0.0, min(a, b))   # keep a <= b
-        c = min(100.0, max(c, b)) # keep b <= c
-        mapping[lv] = TFN(a, b, c)
+        if i==0: a=0; c=(centers[i]+centers[i+1])/2
+        elif i==K-1: a=(centers[i-1]+centers[i])/2; c=100
+        else: a=(centers[i-1]+centers[i])/2; c=(centers[i]+centers[i+1])/2
+        mapping[lv] = TFN(a,b,c)
     return mapping
 
 # ==============================
 # Fuzzy-Hybrid TOPSIS
 # ==============================
-def _normalize_fuzzy_matrix(matrix: List[List[TFN]], is_benefit: List[bool]) -> List[List[TFN]]:
-    m = len(matrix); n = len(matrix[0])
-    c_max = [max(matrix[i][j].c for i in range(m)) for j in range(n)]
-    a_min = [min(matrix[i][j].a for i in range(m)) for j in range(n)]
-    out: List[List[TFN]] = []
+def _normalize_fuzzy_matrix(matrix, is_benefit):
+    m=len(matrix); n=len(matrix[0])
+    c_max=[max(matrix[i][j].c for i in range(m)) for j in range(n)]
+    a_min=[min(matrix[i][j].a for i in range(m)) for j in range(n)]
+    out=[]
     for i in range(m):
-        row: List[TFN] = []
+        row=[]
         for j in range(n):
-            x = matrix[i][j]
+            x=matrix[i][j]
             if is_benefit[j]:
-                denom = c_max[j] if c_max[j] != 0 else 1.0
+                denom = c_max[j] if c_max[j]!=0 else 1
                 row.append(TFN(x.a/denom, x.b/denom, x.c/denom))
             else:
-                amin = a_min[j] if a_min[j] != 0 else 1.0
-                # Chen-style inverse for cost criteria
+                amin=a_min[j] if a_min[j]!=0 else 1
                 row.append(TFN(amin/x.c, amin/(x.b if x.b!=0 else 1e-9), amin/(x.a if x.a!=0 else 1e-9)))
         out.append(row)
     return out
 
-def _apply_weights(matrix: List[List[TFN]], weights: List[float]) -> List[List[TFN]]:
-    m, n = len(matrix), len(matrix[0])
-    wsum = sum(weights)
-    if wsum <= 0:
-        raise ValueError("Weights must sum > 0.")
-    w = [wi/wsum for wi in weights]
+def _apply_weights(matrix,weights):
+    m=len(matrix); n=len(matrix[0])
+    wsum=sum(weights); w=[wi/wsum for wi in weights]
     return [[matrix[i][j].scale(w[j]) for j in range(n)] for i in range(m)]
 
-def _fuzzy_distance(x: TFN, y: TFN) -> float:
-    return math.sqrt((x.a - y.a)**2 + (x.b - y.b)**2 + (x.c - y.c)**2)
+def _fuzzy_distance(x,y):
+    return math.sqrt((x.a-y.a)**2+(x.b-y.b)**2+(x.c-y.c)**2)
 
-def fuzzy_topsis_cc(matrix: List[List[TFN]], is_benefit: List[bool], weights: Optional[List[float]] = None) -> np.ndarray:
-    """Return closeness coefficients in [0,1] for each row (alternative)."""
-    m = len(matrix); n = len(matrix[0])
-    if weights is None:
-        weights = [1.0/n]*n
-    norm = _normalize_fuzzy_matrix(matrix, is_benefit)
-    vw = _apply_weights(norm, weights)
-    fpis: List[TFN] = []; fnis: List[TFN] = []
+def fuzzy_topsis_cc(matrix,is_benefit,weights=None):
+    m=len(matrix); n=len(matrix[0])
+    if weights is None: weights=[1/n]*n
+    norm=_normalize_fuzzy_matrix(matrix,is_benefit)
+    vw=_apply_weights(norm,weights)
+    fpis=[]; fnis=[]
     for j in range(n):
-        col = [vw[i][j] for i in range(m)]
+        col=[vw[i][j] for i in range(m)]
         fpis.append(TFN(max(x.a for x in col), max(x.b for x in col), max(x.c for x in col)))
         fnis.append(TFN(min(x.a for x in col), min(x.b for x in col), min(x.c for x in col)))
-    d_plus = np.zeros(m); d_minus = np.zeros(m)
+    d_plus=np.zeros(m); d_minus=np.zeros(m)
     for i in range(m):
         for j in range(n):
-            d_plus[i]  += _fuzzy_distance(vw[i][j], fpis[j])**2
-            d_minus[i] += _fuzzy_distance(vw[i][j], fnis[j])**2
-        d_plus[i]  = math.sqrt(d_plus[i])
-        d_minus[i] = math.sqrt(d_minus[i])
-    cc = d_minus / (d_plus + d_minus + 1e-12)
-    return np.clip(cc, 0, 1)
+            d_plus[i]+= _fuzzy_distance(vw[i][j], fpis[j])**2
+            d_minus[i]+= _fuzzy_distance(vw[i][j], fnis[j])**2
+        d_plus[i]=math.sqrt(d_plus[i]); d_minus[i]=math.sqrt(d_minus[i])
+    cc=d_minus/(d_plus+d_minus+1e-12)
+    return np.clip(cc,0,1)
 
-def df_to_tfn_matrix(df: pd.DataFrame, cols: List[str], tfn_map: Dict[int, TFN], levels: List[int]) -> List[List[TFN]]:
-    """Build fuzzy decision matrix (rows: alternatives; cols: items)."""
-    level_set = set(levels)
-    for c in cols:
-        vals = pd.unique(df[c].dropna())
-        if not set(map(int, vals)).issubset(level_set):
-            raise ValueError(f"Column '{c}' has values outside scale {sorted(level_set)}.")
-    m = df.shape[0]; mat: List[List[TFN]] = []
+def df_to_tfn_matrix(df,cols,tfn_map_global,levels,tfn_map_by_col):
+    m=df.shape[0]; mat=[]
     for i in range(m):
         row=[]
         for c in cols:
-            v = df.iloc[i][c]
-            if pd.isna(v):
-                raise ValueError(f"NaN at row {i}, column '{c}'. Please impute/remove NA.")
-            row.append(tfn_map[int(v)])
+            col_map=tfn_map_by_col.get(c,tfn_map_global)
+            v=int(df.iloc[i][c])
+            row.append(col_map[v])
         mat.append(row)
     return mat
 
 # ==============================
 # ECO-Extended 4×4 fuzzy sets
 # ==============================
-def eco_fuzzy_sets_4(val: float) -> Tuple[float,float,float,float]:
-    """Memberships to (Low, MedLow, MedHigh, High) over [0,1]. Triangular/shoulder MFs."""
-    low, medlow, medhigh, high = 0,0,0,0
-    if val <= 0.33: low = 1 - val/0.33
-    if val >= 0.66: high = (val-0.66)/0.34 if val <=1 else 1
-    if 0 <= val <= 0.66: medlow = 1 - abs(val-0.33)/0.33
-    if 0.33 <= val <= 1: medhigh = 1 - abs(val-0.66)/0.34
-    return (max(low,0), max(medlow,0), max(medhigh,0), max(high,0))
+def eco_fuzzy_sets_4(val):
+    low=medlow=medhigh=high=0
+    if val<=0.33: low=1-val/0.33
+    if val>=0.66: high=(val-0.66)/0.34 if val<=1 else 1
+    if 0<=val<=0.66: medlow=1-abs(val-0.33)/0.33
+    if 0.33<=val<=1: medhigh=1-abs(val-0.66)/0.34
+    return (max(low,0),max(medlow,0),max(medhigh,0),max(high,0))
 
-def eco_extended_labels_4x4(x: np.ndarray, y: np.ndarray,
-                            x_names=("LowX","MedLowX","MedHighX","HighX"),
-                            y_names=("LowY","MedLowY","MedHighY","HighY")) -> List[str]:
-    labels = []
-    for xi, yi in zip(x,y):
-        lx = np.array(eco_fuzzy_sets_4(xi))
-        ly = np.array(eco_fuzzy_sets_4(yi))
-        cx = x_names[lx.argmax()]
-        cy = y_names[ly.argmax()]
-        labels.append(f"{cx}|{cy}")
+def eco_extended_labels_4x4(x,y):
+    labels=[]
+    for xi,yi in zip(x,y):
+        lx=np.array(eco_fuzzy_sets_4(xi))
+        ly=np.array(eco_fuzzy_sets_4(yi))
+        labels.append(f"{['LowX','MedLowX','MedHighX','HighX'][lx.argmax()]}|{['LowY','MedLowY','MedHighY','HighY'][ly.argmax()]}")
     return labels
 
 # ==============================
 # Classic Apostle (2×2)
 # ==============================
-def apostle_quadrants(x: np.ndarray, y: np.ndarray, x_thr: float, y_thr: float,
-                      q_AA: str, q_AB: str, q_BA: str, q_BB: str) -> List[str]:
-    out = []
-    for xi, yi in zip(x, y):
-        if   xi >= x_thr and yi >= y_thr: out.append(q_AA)
-        elif xi >= x_thr and yi <  y_thr: out.append(q_AB)
-        elif xi <  x_thr and yi >= y_thr: out.append(q_BA)
-        else:                              out.append(q_BB)
+def apostle_quadrants(x,y,x_thr,y_thr,q_AA,q_AB,q_BA,q_BB):
+    out=[]
+    for xi,yi in zip(x,y):
+        if xi>=x_thr and yi>=y_thr: out.append(q_AA)
+        elif xi>=x_thr and yi<y_thr: out.append(q_AB)
+        elif xi<x_thr and yi>=y_thr: out.append(q_BA)
+        else: out.append(q_BB)
     return out
 
 # ==============================
 # Streamlit UI
 # ==============================
-st.set_page_config(page_title="Fuzzy-Hybrid TOPSIS + ECO-Extended 4×4", layout="wide")
-st.title("Latent Variables with Fuzzy-Hybrid TOPSIS → Apostle Classic (2×2) & ECO-Extended (4×4)")
+st.set_page_config(page_title="Fuzzy-Hybrid TOPSIS + Apostle", layout="wide")
+st.title("Fuzzy-Hybrid TOPSIS with Apostle Classic (2×2) & ECO-Extended (4×4)")
 
-# ---- Upload data ----
-df = None
-up = st.file_uploader("Upload CSV or Excel", type=["csv","xlsx"])
-sep = st.text_input("CSV separator (if CSV)", value=",")
-sheet = st.text_input("Excel sheet name (optional)", value="")
+df=None
+up=st.file_uploader("Upload CSV or Excel",type=["csv","xlsx"])
+sep=st.text_input("CSV separator",value=",")
+sheet=st.text_input("Excel sheet name",value="")
 if up is not None:
     try:
-        if up.name.lower().endswith(".csv"):
-            df = pd.read_csv(up, sep=sep)
-        else:
-            df = pd.read_excel(up, sheet_name=sheet if sheet else 0)
-        st.success(f"Loaded: {df.shape[0]} rows × {df.shape[1]} columns.")
-        st.dataframe(df.head(), use_container_width=True)
-    except Exception as e:
-        st.error(f"Read error: {e}")
+        if up.name.endswith(".csv"): df=pd.read_csv(up,sep=sep)
+        else: df=pd.read_excel(up,sheet_name=sheet if sheet else 0)
+        st.success(f"Loaded {df.shape[0]} rows × {df.shape[1]} cols")
+        st.dataframe(df.head())
+    except Exception as e: st.error(f"Read error: {e}")
 
 # ---- Scale & TFNs ----
-st.header("1) Scale & TFN conversion")
-scale_choice = st.selectbox(
-    "Scale type",
-    ["Likert 1–4 (preset)", "Likert 1–5 (preset)", "Arbitrary (linear TFNs)", "Arbitrary (manual TFNs)"]
-)
-levels: List[int] = []
-tfn_map: Dict[int, TFN] = {}
-
-if scale_choice.startswith("Likert 1–4"):
-    levels = [1,2,3,4]; tfn_map = likert4_default_map()
-elif scale_choice.startswith("Likert 1–5"):
-    levels = [1,2,3,4,5]; tfn_map = likert5_default_map()
+st.header("1) Global Scale & TFNs")
+scale_choice=st.selectbox("Scale",["Likert 1–4","Likert 1–5","Arbitrary (linear)","Arbitrary (manual)"])
+levels=[]; tfn_map_global={}; tfn_map_by_col={}
+if scale_choice=="Likert 1–4": levels=[1,2,3,4]; tfn_map_global=likert4_default_map()
+elif scale_choice=="Likert 1–5": levels=[1,2,3,4,5]; tfn_map_global=likert5_default_map()
 else:
-    levels_str = st.text_input("Levels (e.g., 1,2,3,...,10)", value="1,2,3,4,5")
-    try:
-        levels = sorted(list({int(x.strip()) for x in levels_str.split(",") if x.strip() != ""}))
-    except:
-        levels = []; st.warning("Check the levels format.")
-    if levels:
-        if "linear" in scale_choice.lower():
-            try:
-                tfn_map = linear_tfn_map(levels)
-            except Exception as e:
-                st.error(f"Could not generate linear TFNs: {e}")
-        else:
-            st.caption("Define manual TFNs (a,b,c) for each level:")
-            tfn_map = {}
-            for lv in levels:
-                abctxt = st.text_input(f"Level {lv} TFN (a,b,c)", value="0,0,25" if lv == levels[0] else "", key=f"tfn_{lv}")
-                try:
-                    a,b,c = [float(x.strip()) for x in abctxt.split(",")]
-                    tfn_map[lv] = TFN(a,b,c)
-                except:
-                    pass
+    levels=[int(x) for x in st.text_input("Levels","1,2,3,4,5").split(",")]
+    if "linear" in scale_choice: tfn_map_global=linear_tfn_map(levels)
+    else:
+        for lv in levels:
+            a,b,c=[float(x) for x in st.text_input(f"Level {lv} (a,b,c)","0,0,25",key=f"lv{lv}").split(",")]
+            tfn_map_global[lv]=TFN(a,b,c)
 
-if tfn_map:
-    tfndf = pd.DataFrame([{"level": lv, "a": t.a, "b": t.b, "c": t.c} for lv, t in sorted(tfn_map.items())])
-    with st.expander("Show TFN mapping"):
-        st.dataframe(tfndf, use_container_width=True)
-    st.download_button("⬇ Download TFN mapping (CSV)",
-                       data=tfndf.to_csv(index=False).encode("utf-8"),
-                       file_name="tfn_mapping.csv", mime="text/csv")
+if df is not None:
+    st.subheader("Optional per-column TFNs")
+    for col in df.columns:
+        if st.checkbox(f"Custom TFNs for {col}"):
+            lvls=[int(x) for x in st.text_input(f"Levels for {col}","1,2,3,4,5",key=f"lvls_{col}").split(",")]
+            mapping={}
+            for lv in lvls:
+                a,b,c=[float(x) for x in st.text_input(f"{col}-{lv}","0,0,25",key=f"tfn_{col}_{lv}").split(",")]
+                mapping[lv]=TFN(a,b,c)
+            tfn_map_by_col[col]=mapping
 
-# ---- Latents & independent aggregation columns ----
-st.header("2) Select items for the TWO latent variables")
-latents: Dict[str, List[str]] = {}
-is_benefit_by: Dict[str, List[bool]] = {}
-weights_by: Dict[str, List[float]] = {}
-agg_cols_indep: List[str] = []
+# ---- Latents ----
+if df is not None:
+    st.header("2) Latent variables")
+    cols=st.multiselect("Available columns",df.columns)
+    latentX=st.multiselect("Items for latent X",cols)
+    latentY=st.multiselect("Items for latent Y",cols)
 
-if df is not None and len(df.columns) > 0 and levels and tfn_map:
-    all_cols = list(df.columns)
-    st.info("Pick items for exactly two latents (X and Y).")
+    cat_cols=st.multiselect("Categorical columns for aggregate TOPSIS",df.columns)
 
-    # Latent X
-    lname_x = st.text_input("Latent X name", value="LatX")
-    sel_x = st.multiselect(f"Items for {lname_x}", all_cols, key="sel_lat_x")
-    bc_x, w_x = [], []
-    for c in sel_x:
-        c1, c2 = st.columns(2)
-        with c1:
-            bc_x.append(st.selectbox(f"{c}: Benefit/Cost (X)", ["Benefit","Cost"], key=f"bc_x_{c}") == "Benefit")
-        with c2:
-            w_x.append(st.number_input(f"Weight for {c} (X)", value=1.0, step=0.1, key=f"w_x_{c}"))
+    run_btn=st.button("Run analysis")
+    if run_btn and latentX and latentY:
+        # TOPSIS for X
+        mX=df_to_tfn_matrix(df,latentX,tfn_map_global,levels,tfn_map_by_col)
+        ccX=fuzzy_topsis_cc(mX,[True]*len(latentX))
+        # TOPSIS for Y
+        mY=df_to_tfn_matrix(df,latentY,tfn_map_global,levels,tfn_map_by_col)
+        ccY=fuzzy_topsis_cc(mY,[True]*len(latentY))
+        df["LatentX"]=ccX; df["LatentY"]=ccY
 
-    # Latent Y
-    lname_y = st.text_input("Latent Y name", value="LatY")
-    sel_y = st.multiselect(f"Items for {lname_y}", all_cols, key="sel_lat_y")
-    bc_y, w_y = [], []
-    for c in sel_y:
-        c1, c2 = st.columns(2)
-        with c1:
-            bc_y.append(st.selectbox(f"{c}: Benefit/Cost (Y)", ["Benefit","Cost"], key=f"bc_y_{c}") == "Benefit")
-        with c2:
-            w_y.append(st.number_input(f"Weight for {c} (Y)", value=1.0, step=0.1, key=f"w_y_{c}"))
+        # Classic quadrants
+        st.subheader("Classic Apostle (2×2)")
+        qAA=st.text_input("Quadrant HighX/HighY","Apostles")
+        qAB=st.text_input("Quadrant HighX/LowY","Mercenaries")
+        qBA=st.text_input("Quadrant LowX/HighY","Loyalists")
+        qBB=st.text_input("Quadrant LowX/LowY","Defectors")
+        thrX=st.slider("Threshold X",0.0,1.0,0.5)
+        thrY=st.slider("Threshold Y",0.0,1.0,0.5)
+        df["ClassicQuad"]=apostle_quadrants(ccX,ccY,thrX,thrY,qAA,qAB,qBA,qBB)
+        st.write(df["ClassicQuad"].value_counts())
+        fig,ax=plt.subplots()
+        ax.scatter(ccX,ccY,c="blue")
+        ax.axvline(thrX,color="red"); ax.axhline(thrY,color="red")
+        st.pyplot(fig)
 
-    if sel_x and sel_y:
-        latents = {lname_x: sel_x, lname_y: sel_y}
-        is_benefit_by = {lname_x: bc_x, lname_y: bc_y}
-        weights_by = {lname_x: w_x, lname_y: w_y}
-
-    st.subheader("2b) Aggregate Fuzzy-Hybrid TOPSIS by columns (independently)")
-    agg_cols_indep = st.multiselect(
-        "Pick columns to aggregate separately (not jointly).",
-        options=all_cols,
-        key="agg_cols_indep"
-    )
-
-# ---- Manual quadrant naming ----
-st.header("3) Manual quadrant naming")
-c1, c2 = st.columns(2)
-with c1:
-    st.subheader("Classic (2×2) names")
-    AA = st.text_input("x≥Xthr & y≥Ythr", value="Apostles")
-    AB = st.text_input("x≥Xthr & y<Ythr",  value="Mercenaries")
-    BA = st.text_input("x<Xthr & y≥Ythr",  value="Hostages")
-    BB = st.text_input("x<Xthr & y<Ythr",  value="Defectors")
-with c2:
-    st.subheader("ECO-Extended (4×4) axis labels")
-    x_names = [
-        st.text_input("X Low", value="LowX"),
-        st.text_input("X MedLow", value="MedLowX"),
-        st.text_input("X MedHigh", value="MedHighX"),
-        st.text_input("X High", value="HighX"),
-    ]
-    y_names = [
-        st.text_input("Y Low", value="LowY"),
-        st.text_input("Y MedLow", value="MedLowY"),
-        st.text_input("Y MedHigh", value="MedHighY"),
-        st.text_input("Y High", value="HighY"),
-    ]
-
-st.subheader("Optional: custom names for each of the 16 ECO cells")
-use_custom_16 = st.checkbox("Manually name the 16 cells", value=False)
-custom16: Dict[Tuple[int,int], str] = {}
-if use_custom_16:
-    for iy in range(4):
-        row_cols = st.columns(4)
-        for ix in range(4):
-            default_name = f"{x_names[ix]}|{y_names[iy]}"
-            custom16[(ix,iy)] = row_cols[ix].text_input(f"Cell X{ix+1}-Y{iy+1}", value=default_name, key=f"cell_{ix}_{iy}")
-
-# ---- Run ----
-st.header("4) Run Analysis")
-thr_mode = st.radio("Classic thresholds", ["Mean", "Median"], horizontal=True, index=0)
-run_btn = st.button("Run analysis")
-
-if run_btn:
-    try:
-        if df is None:
-            st.error("Please upload a dataset first."); st.stop()
-        if not levels or not tfn_map:
-            st.error("Please define a scale and TFNs."); st.stop()
-        if len(latents) != 2:
-            st.error("Please choose items for TWO latent variables (X and Y)."); st.stop()
-
-        # ==== Individual indices with Fuzzy-Hybrid TOPSIS ====
-        idx: Dict[str, np.ndarray] = {}
-        for nm, items in latents.items():
-            bene = is_benefit_by.get(nm, [True]*len(items))
-            w    = weights_by.get(nm, [1.0]*len(items))
-            mat  = df_to_tfn_matrix(df, items, tfn_map, levels)
-            z    = fuzzy_topsis_cc(mat, is_benefit=bene, weights=w)
-            idx[nm] = z
-
-        names = list(latents.keys())
-        xnm, ynm = names[0], names[1]
-        x, y = idx[xnm], idx[ynm]
-
-        # Table of latent indices
-        res = pd.DataFrame({f"idx_{xnm}": x, f"idx_{ynm}": y})
-        st.subheader("Fuzzy-Hybrid TOPSIS results (latent indices)")
-        st.dataframe(res, use_container_width=True)
-        st.download_button("⬇ Download latent indices (CSV)",
-                           data=res.to_csv(index=False).encode("utf-8"),
-                           file_name="latent_indices_fuzzy_topsis.csv",
-                           mime="text/csv")
-
-        # Classic thresholds (mean/median of whole sample)
-        x_thr = float(np.mean(x)) if thr_mode == "Mean" else float(np.median(x))
-        y_thr = float(np.mean(y)) if thr_mode == "Mean" else float(np.median(y))
-
-        # Classic 2×2 labels (manual names)
-        classic = apostle_quadrants(x, y, x_thr, y_thr, AA, AB, BA, BB)
-        res["Apostle_Classic"] = classic
-
-        # ECO-Extended 4×4 labels
-        if use_custom_16:
-            named = []
-            for xi, yi in zip(x, y):
-                lx = np.array(eco_fuzzy_sets_4(xi)); ix = int(lx.argmax())
-                ly = np.array(eco_fuzzy_sets_4(yi)); iy = int(ly.argmax())
-                named.append(custom16.get((ix,iy), f"{x_names[ix]}|{y_names[iy]}"))
-            res["Apostle_Extended4x4"] = named
-        else:
-            res["Apostle_Extended4x4"] = eco_extended_labels_4x4(x, y, x_names, y_names)
-
-        st.subheader("Final classifications (individual)")
-        st.dataframe(res, use_container_width=True)
-        st.download_button("⬇ Download full results (CSV)",
-                           data=res.to_csv(index=False).encode("utf-8"),
-                           file_name="fuzzy_apostle_results.csv",
-                           mime="text/csv")
-
-        # ==== Plots ====
-        st.header("5) Plots (individual)")
-        # Classic 2×2
-        st.subheader("Apostle Classic (2×2)")
-        fig1, ax1 = plt.subplots()
-        ax1.scatter(x, y, alpha=0.7)
-        ax1.axvline(x_thr); ax1.axhline(y_thr)
-        ax1.set_xlabel(f"TOPSIS index ({xnm})"); ax1.set_ylabel(f"TOPSIS index ({ynm})")
-        ax1.set_title("Apostle Classic")
-        st.pyplot(fig1)
-        buf1 = BytesIO(); fig1.savefig(buf1, format="png", dpi=300, bbox_inches="tight")
-        st.download_button("⬇ Download 2×2 plot (PNG)", data=buf1.getvalue(),
-                           file_name="apostle_2x2.png", mime="image/png")
-        plt.close(fig1)
-
-        # ECO-Extended 4×4
-        st.subheader("ECO-Extended (4×4)")
-        fig2, ax2 = plt.subplots()
-        ax2.scatter(x, y, alpha=0.7)
-        for thr in [0.25, 0.5, 0.75]:
-            ax2.axvline(thr, linestyle="--", alpha=0.7)
-            ax2.axhline(thr, linestyle="--", alpha=0.7)
-        ax2.set_xlabel(f"TOPSIS index ({xnm})"); ax2.set_ylabel(f"TOPSIS index ({ynm})")
-        ax2.set_title("ECO-Extended 4×4")
+        # ECO Extended
+        st.subheader("ECO-Extended Apostle (4×4)")
+        df["ECOQuad"]=eco_extended_labels_4x4(ccX,ccY)
+        st.write(df["ECOQuad"].value_counts())
+        fig2,ax2=plt.subplots()
+        ax2.scatter(ccX,ccY,c="green")
         st.pyplot(fig2)
-        buf2 = BytesIO(); fig2.savefig(buf2, format="png", dpi=300, bbox_inches="tight")
-        st.download_button("⬇ Download 4×4 plot (PNG)", data=buf2.getvalue(),
-                           file_name="eco_extended_4x4.png", mime="image/png")
-        plt.close(fig2)
 
-        # ==== Independent aggregation by columns (means only, not joint) ====
-        st.header("6) Aggregated Fuzzy-Hybrid TOPSIS by columns (independently)")
-        if agg_cols_indep:
-            for gcol in agg_cols_indep:
-                st.subheader(f"Aggregate by {gcol} (independent)")
-                rows = []
-                for cat, subdf in df.groupby(gcol, dropna=False):
-                    row: Dict[str, object] = {gcol: cat}
-                    # recompute indices within subgroup
-                    gx_items = latents[xnm]; gy_items = latents[ynm]
-                    bene_x = is_benefit_by.get(xnm, [True]*len(gx_items))
-                    bene_y = is_benefit_by.get(ynm, [True]*len(gy_items))
-                    w_x = weights_by.get(xnm, [1.0]*len(gx_items))
-                    w_y = weights_by.get(ynm, [1.0]*len(gy_items))
+        # Aggregated TOPSIS per categorical col
+        if cat_cols:
+            st.subheader("Aggregate TOPSIS by category")
+            for cat in cat_cols:
+                st.write(f"Grouping by {cat}")
+                grouped=df.groupby(cat)
+                for name,sub in grouped:
+                    mX=df_to_tfn_matrix(sub,latentX,tfn_map_global,levels,tfn_map_by_col)
+                    ccX=fuzzy_topsis_cc(mX,[True]*len(latentX))
+                    mY=df_to_tfn_matrix(sub,latentY,tfn_map_global,levels,tfn_map_by_col)
+                    ccY=fuzzy_topsis_cc(mY,[True]*len(latentY))
+                    st.write(name,"→ mean X:",ccX.mean(),"mean Y:",ccY.mean())
 
-                    z_x = fuzzy_topsis_cc(df_to_tfn_matrix(subdf, gx_items, tfn_map, levels),
-                                          is_benefit=bene_x, weights=w_x)
-                    z_y = fuzzy_topsis_cc(df_to_tfn_matrix(subdf, gy_items, tfn_map, levels),
-                                          is_benefit=bene_y, weights=w_y)
-
-                    gx, gy = float(np.mean(z_x)), float(np.mean(z_y))
-                    row[f"idx_{xnm}"] = gx
-                    row[f"idx_{ynm}"] = gy
-
-                    # labels for the subgroup centroid (use global thresholds)
-                    if gx >= x_thr and gy >= y_thr:
-                        row["Classic_Label"] = AA
-                    elif gx >= x_thr and gy < y_thr:
-                        row["Classic_Label"] = AB
-                    elif gx < x_thr and gy >= y_thr:
-                        row["Classic_Label"] = BA
-                    else:
-                        row["Classic_Label"] = BB
-
-                    lx = np.array(eco_fuzzy_sets_4(gx)); ix = int(lx.argmax())
-                    ly = np.array(eco_fuzzy_sets_4(gy)); iy = int(ly.argmax())
-                    row["Extended4x4_Label"] = (custom16.get((ix,iy), f"{x_names[ix]}|{y_names[iy]}")
-                                                if use_custom_16 else f"{x_names[ix]}|{y_names[iy]}")
-                    rows.append(row)
-
-                agg_one = pd.DataFrame(rows)
-                st.dataframe(agg_one, use_container_width=True)
-                st.download_button(f"⬇ Download aggregated by {gcol} (CSV)",
-                                   data=agg_one.to_csv(index=False).encode("utf-8"),
-                                   file_name=f"fuzzy_topsis_aggregated_by_{gcol}.csv",
-                                   mime="text/csv")
-        else:
-            st.info("No columns selected for independent aggregation.")
-
-        # ==== Overall counts by quadrant (show all 4 and all 16 labels) ====
-        st.header("7) Overall counts by quadrant")
-
-        # Classic (ensure fixed order & zeros)
-        classic_order = [AA, AB, BA, BB]
-        cnt_classic = res["Apostle_Classic"].value_counts()
-        cnt_classic = cnt_classic.reindex(classic_order, fill_value=0)
-        pct_classic = (cnt_classic / max(1, cnt_classic.sum()) * 100).round(2)
-        tbl_classic = pd.DataFrame({"count": cnt_classic, "percent": pct_classic})
-        st.subheader("Classic (2×2) — counts and percentages")
-        st.dataframe(tbl_classic, use_container_width=True)
-        st.download_button("⬇ Download Classic counts (CSV)",
-                           data=tbl_classic.to_csv().encode("utf-8"),
-                           file_name="overall_counts_classic.csv",
-                           mime="text/csv")
-
-        # ECO-Extended (build full 16-grid label list & zeros)
-        all16 = [f"{x_names[ix]}|{y_names[iy]}" for iy in range(4) for ix in range(4)]
-        cnt_ext = res["Apostle_Extended4x4"].value_counts()
-        cnt_ext = cnt_ext.reindex(all16, fill_value=0)
-        pct_ext = (cnt_ext / max(1, cnt_ext.sum()) * 100).round(2)
-        tbl_ext = pd.DataFrame({"count": cnt_ext, "percent": pct_ext})
-        st.subheader("ECO-Extended (4×4) — counts and percentages")
-        st.dataframe(tbl_ext, use_container_width=True)
-        st.download_button("⬇ Download Extended counts (CSV)",
-                           data=tbl_ext.to_csv().encode("utf-8"),
-                           file_name="overall_counts_extended.csv",
-                           mime="text/csv")
-
-    except Exception as e:
-        st.error(f"Error: {e}")
+        # Download
+        out=BytesIO()
+        df.to_csv(out,index=False)
+        st.download_button("Download results CSV",out.getvalue(),"results.csv","text/csv")
