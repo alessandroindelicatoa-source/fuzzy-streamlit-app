@@ -1,13 +1,15 @@
-# Fuzzy-Hybrid TOPSIS + ECO-Extended Apostle Streamlit App
+# Fuzzy Quadrant Mapper: Classic & ECO-Extended Apostle with Hybrid TOPSIS
 
-This app allows you to:
-- Upload a CSV/Excel dataset
-- Define latent variables from observed items
-- Compute fuzzy-hybrid TOPSIS scores
-- Classify cases using ECO-Extended Apostle quadrant model
+This Streamlit app allows researchers and practitioners to apply **Fuzzy Hybrid TOPSIS** to latent variables, and classify individuals or groups into **Classic Apostle (2×2)** and **ECO-Extended Apostle (4×4)** quadrants.
 
-## Run locally
+## 🚀 How to run
 ```bash
 pip install -r requirements.txt
 streamlit run app_fuzzy.py
 ```
+
+## 🔑 Authentication
+The app requires a password stored in `.streamlit/secrets.toml`.
+
+## 📚 Citation
+Indelicato, A. & Martín, J.C. (2025). *Fuzzy Quadrant Mapper: An Interactive App for Fuzzy Hybrid TOPSIS and ECO-Extended Apostle Models*.
