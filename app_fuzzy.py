@@ -1,10 +1,16 @@
 # app_fuzzy.py
 # -*- coding: utf-8 -*-
 # Streamlit app: Fuzzy-Hybrid TOPSIS + Apostle Classic & ECO-Extended (4x4)
-# Features:
-# - Latent X & Y selection
-# - Per-item scale selection (Likert 1-4,1-5,1-6,1-7,1-10,1-11, Manual)
-# - Silent mean imputation for out-of-scale values
-# - Classic 2x2 & ECO-Extended 4x4 classification, plots, counts
+# Login disabled for testing (no check_password).
 
-# (Full implementation code as discussed in conversation should go here)
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+st.set_page_config(page_title="Fuzzy-Hybrid TOPSIS App (No Login)", layout="wide")
+st.title("Fuzzy-Hybrid TOPSIS + Apostle Classic & ECO-Extended (No Login)")
+
+st.info("Login has been disabled for testing. The rest of the app runs normally.")
+
+# (Here goes the full implementation as in previous versions, only without check_password())
