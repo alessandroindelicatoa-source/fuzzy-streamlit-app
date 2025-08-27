@@ -4,7 +4,6 @@ import math
 from io import BytesIO
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,55 +12,62 @@ import streamlit as st
 # ==============================
 # 0) Password gate
 # ==============================
-def check_password():
+def check_password() -> bool:
     passwords = st.secrets.get("passwords", {})
     users = {str(k).strip().lower(): str(v) for k, v in passwords.items()}
     if not users:
-        st.info("No passwords configured. Running open.")
+        st.info("🔓 No passwords configured (open mode).")
         return True
-    def _enter():
-        u = st.session_state.get("username", "").strip().lower()
-        p = st.session_state.get("password", "")
-        ok = (u in users) and (p == users[u])
-        st.session_state["password_correct"] = bool(ok)
-        if ok and "password" in st.session_state:
-            del st.session_state["password"]
-    if "password_correct" not in st.session_state:
-        st.text_input("Username", key="username")
-        st.text_input("Password", type="password", key="password", on_change=_enter)
+    st.sidebar.subheader("Login")
+    username = st.sidebar.text_input("Username", key="login_user")
+    password = st.sidebar.text_input("Password", type="password", key="login_pass")
+    if username and password:
+        if username.strip().lower() in users and password == users[username.strip().lower()]:
+            return True
+        else:
+            st.sidebar.error("Incorrect username or password.")
+            return False
+    else:
         st.stop()
-    if not st.session_state["password_correct"]:
-        st.text_input("Username", key="username")
-        st.text_input("Password", type="password", key="password", on_change=_enter)
-        st.error("Incorrect username or password")
-        st.stop()
-    return True
-
-check_password()
+if not check_password():
+    st.stop()
 
 # ==============================
-# 1) TFN
+# 1) Triangular fuzzy numbers (TFN)
 # ==============================
 @dataclass(frozen=True)
 class TFN:
     a: float; b: float; c: float
     def __post_init__(self):
-        if not (self.a <= self.b <= self.c): 
+        if not (self.a <= self.b <= self.c):
             raise ValueError("TFN requires a ≤ b ≤ c.")
-    def scale(self,w:float): return TFN(self.a*w,self.b*w,self.c*w)
+    def scale(self, w: float) -> "TFN":
+        return TFN(self.a*w, self.b*w, self.c*w)
 
-# Predefined scales
-PREDEFINED = {
-    "Likert 1-4": {1:TFN(0,0,20),2:TFN(16,33,60),3:TFN(49,66,83),4:TFN(80,100,100)},
-    "Likert 1-5": {1:TFN(0,0,30),2:TFN(20,30,40),3:TFN(30,50,70),4:TFN(60,70,80),5:TFN(70,100,100)},
-    "Likert 1-6": {1:TFN(0,0,15),2:TFN(25,40,55),3:TFN(45,60,75),4:TFN(70,80,90),5:TFN(85,100,100),6:TFN(90,100,100)},
-    "Likert 1-11": {i:TFN((i-1)*10,(i*10)-10,(i*10)) if i<11 else TFN(90,100,100) for i in range(1,12)}
-}
+# ===== Preset TFN mappings =====
+def likert_map_1_4(): return {1: TFN(0,0,20), 2: TFN(16,33,60), 3: TFN(49,66,83), 4: TFN(80,100,100)}
+def likert_map_1_5(): return {1: TFN(0,0,30), 2: TFN(20,30,40), 3: TFN(30,50,70), 4: TFN(60,70,80), 5: TFN(70,100,100)}
+def likert_map_1_6(): return {1: TFN(0,0,15), 2: TFN(25,40,55), 3: TFN(45,60,75), 4: TFN(70,80,90), 5: TFN(85,100,100), 6: TFN(90,100,100)}
+def likert_map_1_7(): return {i: TFN((i-1)*15,(i-1)*15+10,(i-1)*15+20) for i in range(1,8)}
+def likert_map_1_10(): return {i: TFN((i-1)*10,(i-1)*10+10,(i-1)*10+20) for i in range(1,11)}
+def likert_map_1_11(): return {i: TFN((i-1)*10,(i-1)*10+10,(i-1)*10+20) for i in range(1,12)}
+
+def linear_tfn_map(levels: List[int]) -> Dict[int, TFN]:
+    K = len(levels)
+    centers = np.linspace(0, 100, K)
+    mapping = {}
+    for i, lv in enumerate(levels):
+        b = float(centers[i])
+        if i == 0: a, c = 0.0, (centers[i]+centers[i+1])/2
+        elif i == K-1: a, c = (centers[i-1]+centers[i])/2, 100.0
+        else: a, c = (centers[i-1]+centers[i])/2, (centers[i]+centers[i+1])/2
+        mapping[lv] = TFN(a, b, c)
+    return mapping
 
 # ==============================
-# 2) TOPSIS
+# 2) Fuzzy-Hybrid TOPSIS
 # ==============================
-def _normalize_fuzzy_matrix(matrix,is_benefit):
+def _normalize_fuzzy_matrix(matrix, is_benefit):
     m,n=len(matrix),len(matrix[0])
     c_max=[max(matrix[i][j].c for i in range(m)) for j in range(n)]
     a_min=[min(matrix[i][j].a for i in range(m)) for j in range(n)]
@@ -75,7 +81,7 @@ def _normalize_fuzzy_matrix(matrix,is_benefit):
                 row.append(TFN(x.a/denom,x.b/denom,x.c/denom))
             else:
                 amin=a_min[j] if a_min[j]!=0 else 1
-                row.append(TFN(amin/x.c,amin/(x.b if x.b else 1e-9),amin/(x.a if x.a else 1e-9)))
+                row.append(TFN(amin/x.c, amin/(x.b if x.b else 1e-9), amin/(x.a if x.a else 1e-9)))
         out.append(row)
     return out
 
@@ -83,8 +89,7 @@ def _apply_weights(matrix,weights):
     wsum=sum(weights); w=[wi/wsum for wi in weights]
     return [[matrix[i][j].scale(w[j]) for j in range(len(matrix[0]))] for i in range(len(matrix))]
 
-def _fuzzy_distance(x,y): 
-    return math.sqrt((x.a-y.a)**2+(x.b-y.b)**2+(x.c-y.c)**2)
+def _fuzzy_distance(x,y): return math.sqrt((x.a-y.a)**2+(x.b-y.b)**2+(x.c-y.c)**2)
 
 def fuzzy_topsis_cc(matrix,is_benefit,weights=None):
     m,n=len(matrix),len(matrix[0])
@@ -102,8 +107,7 @@ def fuzzy_topsis_cc(matrix,is_benefit,weights=None):
             d_plus[i]+=_fuzzy_distance(vw[i][j],fpis[j])**2
             d_minus[i]+=_fuzzy_distance(vw[i][j],fnis[j])**2
         d_plus[i]=math.sqrt(d_plus[i]); d_minus[i]=math.sqrt(d_minus[i])
-    cc=d_minus/(d_plus+d_minus+1e-12)
-    return np.clip(cc,0,1)
+    return np.clip(d_minus/(d_plus+d_minus+1e-12),0,1)
 
 def df_to_tfn_matrix(df,cols,tfn_map,levels):
     m=df.shape[0]; mat=[]
@@ -113,7 +117,7 @@ def df_to_tfn_matrix(df,cols,tfn_map,levels):
             v=df.iloc[i][c]
             try: iv=int(v)
             except: iv=None
-            if iv not in levels: iv=int(np.mean(levels)) # imputación media
+            if iv not in levels: iv=int(np.median(levels)) # imputación silenciosa
             row.append(tfn_map[iv])
         mat.append(row)
     return mat
@@ -164,8 +168,28 @@ if df is not None:
     items_x=st.sidebar.multiselect("Items for X",all_cols)
     lname_y=st.sidebar.text_input("Latent Y name",value="LatY")
     items_y=st.sidebar.multiselect("Items for Y",all_cols)
-    scale_choice=st.sidebar.selectbox("Scale",list(PREDEFINED.keys()))
-    tfn_map,levels=PREDEFINED[scale_choice],list(PREDEFINED[scale_choice].keys())
+
+    # Escalas por ítem
+    st.sidebar.header("Scales per item")
+    tfn_map_by_item={}; levels_by_item={}
+    for it in items_x+items_y:
+        sc_choice=st.sidebar.selectbox(f"Scale for {it}",["Likert1-4","Likert1-5","Likert1-6","Likert1-7","Likert1-10","Likert1-11","Linear","Manual"],key=f"sc_{it}")
+        if sc_choice=="Likert1-4": tfn_map_by_item[it]=likert_map_1_4(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
+        elif sc_choice=="Likert1-5": tfn_map_by_item[it]=likert_map_1_5(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
+        elif sc_choice=="Likert1-6": tfn_map_by_item[it]=likert_map_1_6(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
+        elif sc_choice=="Likert1-7": tfn_map_by_item[it]=likert_map_1_7(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
+        elif sc_choice=="Likert1-10": tfn_map_by_item[it]=likert_map_1_10(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
+        elif sc_choice=="Likert1-11": tfn_map_by_item[it]=likert_map_1_11(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
+        elif sc_choice=="Linear":
+            lv=[int(x) for x in st.sidebar.text_input(f"Levels for {it}",value="1,2,3,4,5",key=f"lv_{it}").split(",")]
+            tfn_map_by_item[it]=linear_tfn_map(lv); levels_by_item[it]=lv
+        else: # Manual
+            lv=[int(x) for x in st.sidebar.text_input(f"Levels for {it}",value="1,2,3,4,5",key=f"lvman_{it}").split(",")]
+            levels_by_item[it]=lv; tfn_map_by_item[it]={}
+            for l in lv:
+                abctxt=st.sidebar.text_input(f"{it}-{l} TFN",value="0,0,25",key=f"tfn_{it}_{l}")
+                a,b,c=[float(x) for x in abctxt.split(",")]
+                tfn_map_by_item[it][l]=TFN(a,b,c)
 
     # Quadrant naming
     st.sidebar.header("Quadrant naming")
@@ -187,7 +211,13 @@ if df is not None:
     if st.button("Run analysis") and items_x and items_y:
         idx={}
         for nm,items in {lname_x:items_x,lname_y:items_y}.items():
-            mat=df_to_tfn_matrix(df,items,tfn_map,levels)
+            mat=[]
+            for it in items:
+                mat_item=df_to_tfn_matrix(df,[it],tfn_map_by_item[it],levels_by_item[it])
+                if not mat: mat=[[x] for x in mat_item]
+                else:
+                    for r,row in enumerate(mat_item):
+                        mat[r].append(row[0])
             idx[nm]=fuzzy_topsis_cc(mat,[True]*len(items),[1.0]*len(items))
         x,y=idx[lname_x],idx[lname_y]
         x_thr,y_thr=np.mean(x),np.mean(y)
@@ -198,7 +228,7 @@ if df is not None:
         st.dataframe(res)
 
         # Plots
-        fig,ax=plt.subplots(); ax.scatter(x,y)
+        fig,ax=plt.subplots(); ax.scatter(x,y,alpha=0.7)
         ax.axvline(x_thr,ls="--"); ax.axhline(y_thr,ls="--")
         st.pyplot(fig)
 
@@ -209,11 +239,23 @@ if df is not None:
                 grouped=[]
                 for cat,subdf in df.groupby(gcol):
                     gx_items,gy_items=items_x,items_y
-                    z_x=fuzzy_topsis_cc(df_to_tfn_matrix(subdf,gx_items,tfn_map,levels),[True]*len(gx_items))
-                    z_y=fuzzy_topsis_cc(df_to_tfn_matrix(subdf,gy_items,tfn_map,levels),[True]*len(gy_items))
+                    matx,maty=[],[]
+                    for it in gx_items:
+                        m=df_to_tfn_matrix(subdf,[it],tfn_map_by_item[it],levels_by_item[it])
+                        if not matx: matx=[[x] for x in m]
+                        else:
+                            for r,row in enumerate(m): matx[r].append(row[0])
+                    for it in gy_items:
+                        m=df_to_tfn_matrix(subdf,[it],tfn_map_by_item[it],levels_by_item[it])
+                        if not maty: maty=[[x] for x in m]
+                        else:
+                            for r,row in enumerate(m): maty[r].append(row[0])
+                    z_x=fuzzy_topsis_cc(matx,[True]*len(gx_items))
+                    z_y=fuzzy_topsis_cc(maty,[True]*len(gy_items))
                     gx,gy=np.mean(z_x),np.mean(z_y)
                     label_classic=(AA if gx>=x_thr and gy>=y_thr else AB if gx>=x_thr else BA if gy>=y_thr else BB)
                     lx,ly=np.array(eco_fuzzy_sets_4(gx)),np.array(eco_fuzzy_sets_4(gy))
                     eco_label=custom16[(lx.argmax(),ly.argmax())]
                     grouped.append({gcol:cat,f"idx_{lname_x}":gx,f"idx_{lname_y}":gy,"Classic":label_classic,"Extended4x4":eco_label})
                 st.dataframe(pd.DataFrame(grouped))
+
