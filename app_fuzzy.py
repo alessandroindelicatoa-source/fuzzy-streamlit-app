@@ -3,7 +3,7 @@
 import math
 from io import BytesIO
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -109,17 +109,16 @@ def fuzzy_topsis_cc(matrix,is_benefit,weights=None):
         d_plus[i]=math.sqrt(d_plus[i]); d_minus[i]=math.sqrt(d_minus[i])
     return np.clip(d_minus/(d_plus+d_minus+1e-12),0,1)
 
-def df_to_tfn_matrix(df,cols,tfn_map,levels):
-    m=df.shape[0]; mat=[]
+def df_to_tfn_matrix_single_item(df, col, tfn_map, levels):
+    m=df.shape[0]
+    median_level=int(np.median(levels))
+    mat=[]
     for i in range(m):
-        row=[]
-        for c in cols:
-            v=df.iloc[i][c]
-            try: iv=int(v)
-            except: iv=None
-            if iv not in levels: iv=int(np.median(levels)) # imputación silenciosa
-            row.append(tfn_map[iv])
-        mat.append(row)
+        v=df.iloc[i][col]
+        try: iv=int(v)
+        except: iv=None
+        if iv not in levels: iv=median_level
+        mat.append([tfn_map[iv]])
     return mat
 
 # ==============================
@@ -159,7 +158,7 @@ df=None
 up=st.file_uploader("Upload CSV or Excel",type=["csv","xlsx"])
 if up is not None:
     df=pd.read_csv(up) if up.name.endswith(".csv") else pd.read_excel(up)
-    st.dataframe(df.head())
+    st.dataframe(df.head(), use_container_width=True)
 
 if df is not None:
     st.sidebar.header("Latent variables")
@@ -174,31 +173,35 @@ if df is not None:
     tfn_map_by_item={}; levels_by_item={}
     for it in items_x+items_y:
         sc_choice=st.sidebar.selectbox(f"Scale for {it}",["Likert1-4","Likert1-5","Likert1-6","Likert1-7","Likert1-10","Likert1-11","Linear","Manual"],key=f"sc_{it}")
-        if sc_choice=="Likert1-4": tfn_map_by_item[it]=likert_map_1_4(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
-        elif sc_choice=="Likert1-5": tfn_map_by_item[it]=likert_map_1_5(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
-        elif sc_choice=="Likert1-6": tfn_map_by_item[it]=likert_map_1_6(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
-        elif sc_choice=="Likert1-7": tfn_map_by_item[it]=likert_map_1_7(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
-        elif sc_choice=="Likert1-10": tfn_map_by_item[it]=likert_map_1_10(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
-        elif sc_choice=="Likert1-11": tfn_map_by_item[it]=likert_map_1_11(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
+        if sc_choice=="Likert1-4": tfn_map=likert_map_1_4(); lv=list(tfn_map.keys())
+        elif sc_choice=="Likert1-5": tfn_map=likert_map_1_5(); lv=list(tfn_map.keys())
+        elif sc_choice=="Likert1-6": tfn_map=likert_map_1_6(); lv=list(tfn_map.keys())
+        elif sc_choice=="Likert1-7": tfn_map=likert_map_1_7(); lv=list(tfn_map.keys())
+        elif sc_choice=="Likert1-10": tfn_map=likert_map_1_10(); lv=list(tfn_map.keys())
+        elif sc_choice=="Likert1-11": tfn_map=likert_map_1_11(); lv=list(tfn_map.keys())
         elif sc_choice=="Linear":
             lv=[int(x) for x in st.sidebar.text_input(f"Levels for {it}",value="1,2,3,4,5",key=f"lv_{it}").split(",")]
-            tfn_map_by_item[it]=linear_tfn_map(lv); levels_by_item[it]=lv
+            lv=sorted(list(set(lv)))
+            tfn_map=linear_tfn_map(lv)
         else: # Manual
             lv=[int(x) for x in st.sidebar.text_input(f"Levels for {it}",value="1,2,3,4,5",key=f"lvman_{it}").split(",")]
-            levels_by_item[it]=lv; tfn_map_by_item[it]={}
+            lv=sorted(list(set(lv)))
+            tfn_map={}
             for l in lv:
-                abctxt=st.sidebar.text_input(f"{it}-{l} TFN",value="0,0,25",key=f"tfn_{it}_{l}")
+                abctxt=st.sidebar.text_input(f"{it}-{l} TFN (a,b,c)",value="0,0,25",key=f"tfn_{it}_{l}")
                 a,b,c=[float(x) for x in abctxt.split(",")]
-                tfn_map_by_item[it][l]=TFN(a,b,c)
+                tfn_map[l]=TFN(a,b,c)
+        tfn_map_by_item[it]=tfn_map
+        levels_by_item[it]=lv
 
     # Quadrant naming
-    st.sidebar.header("Quadrant naming")
+    st.sidebar.header("Quadrant naming (Classic & ECO-Extended)")
     AA=st.sidebar.text_input("Classic: x≥thr & y≥thr",value="Apostles")
     AB=st.sidebar.text_input("Classic: x≥thr & y<thr",value="Mercenaries")
     BA=st.sidebar.text_input("Classic: x<thr & y≥thr",value="Hostages")
     BB=st.sidebar.text_input("Classic: x<thr & y<thr",value="Defectors")
-    x_names=[st.sidebar.text_input(f"X name {i}",v) for i,v in enumerate(["LowX","MedLowX","MedHighX","HighX"])]
-    y_names=[st.sidebar.text_input(f"Y name {i}",v) for i,v in enumerate(["LowY","MedLowY","MedHighY","HighY"])]
+    x_names=[st.sidebar.text_input(f"X name {i+1}",v) for i,v in enumerate(["LowX","MedLowX","MedHighX","HighX"])]
+    y_names=[st.sidebar.text_input(f"Y name {i+1}",v) for i,v in enumerate(["LowY","MedLowY","MedHighY","HighY"])]
     custom16={}
     for iy in range(4):
         for ix in range(4):
@@ -209,53 +212,48 @@ if df is not None:
     group_cols=st.sidebar.multiselect("Group by columns",all_cols)
 
     if st.button("Run analysis") and items_x and items_y:
-        idx={}
-        for nm,items in {lname_x:items_x,lname_y:items_y}.items():
-            mat=[]
+        idx = {}
+        for nm, items in {lname_x: items_x, lname_y: items_y}.items():
+            mat = []
             for it in items:
-                mat_item=df_to_tfn_matrix(df,[it],tfn_map_by_item[it],levels_by_item[it])
-                if not mat: mat=[[x] for x in mat_item]
+                m = df_to_tfn_matrix_single_item(df, it, tfn_map_by_item[it], levels_by_item[it])
+                if not mat:
+                    mat = [[cell for cell in row] for row in m]
                 else:
-                    for r,row in enumerate(mat_item):
-                        mat[r].append(row[0])
-            idx[nm]=fuzzy_topsis_cc(mat,[True]*len(items),[1.0]*len(items))
-        x,y=idx[lname_x],idx[lname_y]
-        x_thr,y_thr=np.mean(x),np.mean(y)
-        res=pd.DataFrame({f"idx_{lname_x}":x,f"idx_{lname_y}":y})
-        res["Classic"]=apostle_quadrants(x,y,x_thr,y_thr,AA,AB,BA,BB)
-        res["Extended4x4"]=eco_extended_labels_4x4(x,y,x_names,y_names)
+                    for r, row in enumerate(m):
+                        mat[r].extend(row)
+            idx[nm] = fuzzy_topsis_cc(mat, [True]*len(items), [1.0]*len(items))
+
+        x, y = idx[lname_x], idx[lname_y]
+        x_thr, y_thr = float(np.mean(x)), float(np.mean(y))
+        res = pd.DataFrame({f"idx_{lname_x}": x, f"idx_{lname_y}": y})
+        res["Classic"] = apostle_quadrants(x, y, x_thr, y_thr, AA, AB, BA, BB)
+        res["Extended4x4"] = eco_extended_labels_4x4(x, y, x_names, y_names)
         st.subheader("Results (individual)")
-        st.dataframe(res)
+        st.dataframe(res, use_container_width=True)
 
-        # Plots
-        fig,ax=plt.subplots(); ax.scatter(x,y,alpha=0.7)
-        ax.axvline(x_thr,ls="--"); ax.axhline(y_thr,ls="--")
-        st.pyplot(fig)
-
-        # Group results
+        # ---- Group results
         if group_cols:
             for gcol in group_cols:
                 st.subheader(f"Grouped by {gcol}")
-                grouped=[]
-                for cat,subdf in df.groupby(gcol):
-                    gx_items,gy_items=items_x,items_y
-                    matx,maty=[],[]
-                    for it in gx_items:
-                        m=df_to_tfn_matrix(subdf,[it],tfn_map_by_item[it],levels_by_item[it])
-                        if not matx: matx=[[x] for x in m]
+                grouped = []
+                for cat, subdf in df.groupby(gcol, dropna=False):
+                    matx=[]; maty=[]
+                    for it in items_x:
+                        m = df_to_tfn_matrix_single_item(subdf, it, tfn_map_by_item[it], levels_by_item[it])
+                        if not matx: matx=[[cell for cell in row] for row in m]
                         else:
-                            for r,row in enumerate(m): matx[r].append(row[0])
-                    for it in gy_items:
-                        m=df_to_tfn_matrix(subdf,[it],tfn_map_by_item[it],levels_by_item[it])
-                        if not maty: maty=[[x] for x in m]
+                            for r, row in enumerate(m): matx[r].extend(row)
+                    for it in items_y:
+                        m = df_to_tfn_matrix_single_item(subdf, it, tfn_map_by_item[it], levels_by_item[it])
+                        if not maty: maty=[[cell for cell in row] for row in m]
                         else:
-                            for r,row in enumerate(m): maty[r].append(row[0])
-                    z_x=fuzzy_topsis_cc(matx,[True]*len(gx_items))
-                    z_y=fuzzy_topsis_cc(maty,[True]*len(gy_items))
-                    gx,gy=np.mean(z_x),np.mean(z_y)
+                            for r, row in enumerate(m): maty[r].extend(row)
+                    z_x=fuzzy_topsis_cc(matx,[True]*len(items_x))
+                    z_y=fuzzy_topsis_cc(maty,[True]*len(items_y))
+                    gx,gy=float(np.mean(z_x)),float(np.mean(z_y))
                     label_classic=(AA if gx>=x_thr and gy>=y_thr else AB if gx>=x_thr else BA if gy>=y_thr else BB)
                     lx,ly=np.array(eco_fuzzy_sets_4(gx)),np.array(eco_fuzzy_sets_4(gy))
-                    eco_label=custom16[(lx.argmax(),ly.argmax())]
+                    eco_label=custom16.get((lx.argmax(),ly.argmax()),f"{x_names[lx.argmax()]}|{y_names[ly.argmax()]}")
                     grouped.append({gcol:cat,f"idx_{lname_x}":gx,f"idx_{lname_y}":gy,"Classic":label_classic,"Extended4x4":eco_label})
-                st.dataframe(pd.DataFrame(grouped))
-
+                st.dataframe(pd.DataFrame(grouped), use_container_width=True)
