@@ -1,37 +1,11 @@
 # app_fuzzy.py
 # -*- coding: utf-8 -*-
 import math
-from io import BytesIO
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 import streamlit as st
-
-# ==============================
-# 0) Password gate
-# ==============================
-def check_password() -> bool:
-    passwords = st.secrets.get("passwords", {})
-    users = {str(k).strip().lower(): str(v) for k, v in passwords.items()}
-    if not users:
-        st.info("🔓 No passwords configured (open mode).")
-        return True
-    st.sidebar.subheader("Login")
-    username = st.sidebar.text_input("Username", key="login_user")
-    password = st.sidebar.text_input("Password", type="password", key="login_pass")
-    if username and password:
-        if username.strip().lower() in users and password == users[username.strip().lower()]:
-            return True
-        else:
-            st.sidebar.error("Incorrect username or password.")
-            return False
-    else:
-        st.stop()
-if not check_password():
-    st.stop()
 
 # ==============================
 # 1) Triangular fuzzy numbers (TFN)
@@ -50,7 +24,19 @@ def likert_map_1_4(): return {1: TFN(0,0,20), 2: TFN(16,33,60), 3: TFN(49,66,83)
 def likert_map_1_5(): return {1: TFN(0,0,30), 2: TFN(20,30,40), 3: TFN(30,50,70), 4: TFN(60,70,80), 5: TFN(70,100,100)}
 def likert_map_1_6(): return {1: TFN(0,0,15), 2: TFN(25,40,55), 3: TFN(45,60,75), 4: TFN(70,80,90), 5: TFN(85,100,100), 6: TFN(90,100,100)}
 def likert_map_1_7(): return {i: TFN((i-1)*15,(i-1)*15+10,(i-1)*15+20) for i in range(1,8)}
-def likert_map_1_10(): return {i: TFN((i-1)*10,(i-1)*10+10,(i-1)*10+20) for i in range(1,11)}
+def likert_map_1_10():
+    return {
+        1:  TFN(0, 0, 10),
+        2:  TFN(0, 10, 20),
+        3:  TFN(10, 20, 30),
+        4:  TFN(20, 30, 40),
+        5:  TFN(30, 40, 50),
+        6:  TFN(50, 60, 70),
+        7:  TFN(60, 70, 80),
+        8:  TFN(70, 80, 90),
+        9:  TFN(80, 90, 100),
+        10: TFN(90, 100, 100)
+    }
 def likert_map_1_11(): return {i: TFN((i-1)*10,(i-1)*10+10,(i-1)*10+20) for i in range(1,12)}
 
 def linear_tfn_map(levels: List[int]) -> Dict[int, TFN]:
@@ -68,8 +54,15 @@ def linear_tfn_map(levels: List[int]) -> Dict[int, TFN]:
 # ==============================
 # 2) Fuzzy-Hybrid TOPSIS
 # ==============================
+def ensure_tfn(x):
+    if isinstance(x, TFN): return x
+    if isinstance(x, (int, float)): return TFN(x, x, x)
+    if isinstance(x, (list, tuple)) and len(x)==3: return TFN(*x)
+    raise ValueError(f"Cannot convert {x} to TFN")
+
 def _normalize_fuzzy_matrix(matrix, is_benefit):
     m,n=len(matrix),len(matrix[0])
+    matrix=[[ensure_tfn(x) for x in row] for row in matrix]
     c_max=[max(matrix[i][j].c for i in range(m)) for j in range(n)]
     a_min=[min(matrix[i][j].a for i in range(m)) for j in range(n)]
     out=[]
@@ -114,24 +107,20 @@ def df_to_tfn_matrix(df, cols, tfn_map, levels):
     m = df.shape[0]
     mat = []
     median_level = int(np.median(levels))
-    fallback = tfn_map[median_level]  # usar TFN de la mediana como backup
-
+    fallback = tfn_map[median_level]
     for i in range(m):
         row = []
         for c in cols:
             v = df.iloc[i][c]
-            try:
-                iv = int(v)
-            except:
-                iv = None
-            if iv not in levels:
-                iv = median_level  # imputación silenciosa
+            try: iv = int(v)
+            except: iv = None
+            if iv not in levels: iv = median_level
             row.append(tfn_map.get(iv, fallback))
         mat.append(row)
     return mat
 
 # ==============================
-# 3) Quadrants
+# 3) Quadrants (Apostle & ECO)
 # ==============================
 def apostle_quadrants(x,y,x_thr,y_thr,AA,AB,BA,BB):
     out=[]
@@ -158,36 +147,10 @@ def eco_extended_labels_4x4(x,y,x_names,y_names):
     return labels
 
 # ==============================
-# 4) Conditional probability ratios
-# ==============================
-def conditional_probability_ratios(df, quad_col, covar_cols, n_boot=1000, seed=42):
-    np.random.seed(seed)
-    results=[]
-    N=len(df)
-    for cov in covar_cols:
-        for quad in df[quad_col].unique():
-            arr=[]
-            for _ in range(n_boot):
-                sample=df.sample(N,replace=True)
-                A=(sample[quad_col]==quad).astype(int)
-                B=~sample[cov].isna()
-                num=(A&B).sum()/N
-                pA=A.mean(); pB=B.mean()
-                if pA*pB>0: arr.append(num/(pA*pB))
-            if arr:
-                results.append({
-                    "Quadrant":quad,"Covariate":cov,
-                    "Mean":np.mean(arr),
-                    "CI_low":np.percentile(arr,2.5),
-                    "CI_high":np.percentile(arr,97.5)
-                })
-    return pd.DataFrame(results)
-
-# ==============================
-# 5) UI
+# 4) Streamlit App
 # ==============================
 st.set_page_config(page_title="Fuzzy TOPSIS + Apostle", layout="wide")
-st.title("Fuzzy-Hybrid TOPSIS + Apostle Classic & ECO-Extended")
+st.title("Fuzzy-Hybrid TOPSIS + Apostle Model")
 
 df=None
 up=st.file_uploader("Upload CSV or Excel",type=["csv","xlsx"])
@@ -231,18 +194,9 @@ if df is not None:
     BB=st.sidebar.text_input("Classic: x<thr & y<thr",value="Defectors")
     x_names=[st.sidebar.text_input(f"X name {i}",v) for i,v in enumerate(["LowX","MedLowX","MedHighX","HighX"])]
     y_names=[st.sidebar.text_input(f"Y name {i}",v) for i,v in enumerate(["LowY","MedLowY","MedHighY","HighY"])]
-    custom16={}
-    for iy in range(4):
-        for ix in range(4):
-            default=f"{x_names[ix]}|{y_names[iy]}"
-            custom16[(ix,iy)]=st.sidebar.text_input(f"ECO cell X{ix+1}-Y{iy+1}",default)
-
-    group_cols=st.sidebar.multiselect("Group by columns",all_cols)
-    covar_cols=st.sidebar.multiselect("Covariates for probability ratios",all_cols)
 
     if st.button("Run analysis") and items_x and items_y:
-        idx={}
-        ideal_solutions={}
+        idx={}; ideal_solutions={}
         for nm,items in {lname_x:items_x,lname_y:items_y}.items():
             mat=[]
             for it in items:
@@ -262,8 +216,3 @@ if df is not None:
 
         st.subheader("Ideal solutions (PIS/NIS)")
         st.json({nm:{"PIS":[(t.a,t.b,t.c) for t in v["PIS"]],"NIS":[(t.a,t.b,t.c) for t in v["NIS"]]} for nm,v in ideal_solutions.items()})
-
-        if covar_cols:
-            st.subheader("Conditional probability ratios")
-            ratios=conditional_probability_ratios(res,"Classic",covar_cols)
-            st.dataframe(ratios)
