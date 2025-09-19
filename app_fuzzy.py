@@ -110,16 +110,23 @@ def fuzzy_topsis_cc(matrix,is_benefit,weights=None):
         d_plus[i]=math.sqrt(d_plus[i]); d_minus[i]=math.sqrt(d_minus[i])
     return np.clip(d_minus/(d_plus+d_minus+1e-12),0,1), fpis, fnis
 
-def df_to_tfn_matrix(df,cols,tfn_map,levels):
-    m=df.shape[0]; mat=[]
+def df_to_tfn_matrix(df, cols, tfn_map, levels):
+    m = df.shape[0]
+    mat = []
+    median_level = int(np.median(levels))
+    fallback = tfn_map[median_level]  # usar TFN de la mediana como backup
+
     for i in range(m):
-        row=[]
+        row = []
         for c in cols:
-            v=df.iloc[i][c]
-            try: iv=int(v)
-            except: iv=None
-            if iv not in levels: iv=int(np.median(levels)) # imputación silenciosa
-            row.append(tfn_map[iv])
+            v = df.iloc[i][c]
+            try:
+                iv = int(v)
+            except:
+                iv = None
+            if iv not in levels:
+                iv = median_level  # imputación silenciosa
+            row.append(tfn_map.get(iv, fallback))
         mat.append(row)
     return mat
 
