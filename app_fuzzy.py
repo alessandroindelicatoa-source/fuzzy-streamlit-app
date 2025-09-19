@@ -147,7 +147,49 @@ def eco_extended_labels_4x4(x,y,x_names,y_names):
     return labels
 
 # ==============================
-# 4) Streamlit App
+# 4) Probability Ratios (bootstrap)
+# ==============================
+def _prob_ratio_bootstrap(A: np.ndarray, B: np.ndarray, n_boot: int = 1000, seed: int = 42):
+    rng = np.random.default_rng(seed)
+    N = len(A)
+    vals = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, N, N)
+        As = A[idx]; Bs = B[idx]
+        pA = As.mean(); pB = Bs.mean()
+        pAB = (As & Bs).mean()
+        if pA > 0 and pB > 0:
+            vals.append(pAB / (pA * pB))
+    if not vals:
+        return np.nan, np.nan, np.nan
+    return float(np.mean(vals)), float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
+
+def conditional_probability_ratios_by_level(df: pd.DataFrame, quad_col: str, covar_cols: List[str], max_levels: int = 8, n_boot: int = 1000):
+    rows = []
+    for cov in covar_cols:
+        series = df[cov]
+        unique_vals = series.dropna().unique()
+        if (series.dtype.kind in "biufc") and len(unique_vals) > max_levels:
+            levels = [("__NONMISSING__", "__NONMISSING__")]
+        else:
+            levels = [(str(v), v) for v in sorted(unique_vals, key=lambda x: str(x))[:max_levels]]
+            if len(unique_vals) > max_levels:
+                levels.append(("OTHER", None))
+        for q in df[quad_col].dropna().unique():
+            A = (df[quad_col] == q).astype(int).to_numpy()
+            for lvl_name, lvl_val in levels:
+                if lvl_val == "__NONMISSING__":
+                    B = (~series.isna()).astype(int).to_numpy()
+                elif lvl_val is None:
+                    B = (~series.isin([v for _, v in levels[:-1]])).astype(int).to_numpy()
+                else:
+                    B = (series == lvl_val).astype(int).to_numpy()
+                mean, lo, hi = _prob_ratio_bootstrap(A, B, n_boot=n_boot)
+                rows.append({"Quadrant": str(q), "Covariate": cov, "Level": lvl_name, "Mean": round(mean,3), "CI_low": round(lo,3), "CI_high": round(hi,3)})
+    return pd.DataFrame(rows)
+
+# ==============================
+# 5) Streamlit App
 # ==============================
 st.set_page_config(page_title="Fuzzy TOPSIS + Apostle", layout="wide")
 st.title("Fuzzy-Hybrid TOPSIS + Apostle Model")
@@ -202,7 +244,6 @@ if df is not None:
             for it in items:
                 mat_item = df_to_tfn_matrix(df, [it], tfn_map_by_item[it], levels_by_item[it])
                 if not mat:
-                    # aquí mat_item es [[TFN], [TFN], ...] → me quedo con row[0]
                     mat = [[row[0]] for row in mat_item]
                 else:
                     for r, row in enumerate(mat_item):
@@ -219,3 +260,42 @@ if df is not None:
 
         st.subheader("Ideal solutions (PIS/NIS)")
         st.json({nm:{"PIS":[(t.a,t.b,t.c) for t in v["PIS"]],"NIS":[(t.a,t.b,t.c) for t in v["NIS"]]} for nm,v in ideal_solutions.items()})
+
+        # ==============================
+        #  Group-level TOPSIS + summary
+        # ==============================
+        group_cols = st.sidebar.multiselect("Group by columns", all_cols)
+        if group_cols:
+            summaries = []
+            for gcol in group_cols:
+                for gval, dfg in df.groupby(gcol):
+                    for nm, items in {lname_x: items_x, lname_y: items_y}.items():
+                        mat = []
+                        for it in items:
+                            mat_item = df_to_tfn_matrix(dfg, [it], tfn_map_by_item[it], levels_by_item[it])
+                            if not mat:
+                                mat = [[row[0]] for row in mat_item]
+                            else:
+                                for r, row in enumerate(mat_item):
+                                    mat[r].append(row[0])
+                        idx_g, fpis, fnis = fuzzy_topsis_cc(mat, [True]*len(items), [1.0]*len(items))
+                        summaries.append({
+                            "Item": nm,
+                            "Group": f"{gcol}: {gval}",
+                            "PIS": round(np.mean([t.b for t in fpis]), 2),
+                            "NIS": round(np.mean([t.b for t in fnis]), 2)
+                        })
+            if summaries:
+                st.subheader("Summary by group (PIS/NIS)")
+                summary_df = pd.DataFrame(summaries)
+                st.dataframe(summary_df)
+
+        # ==============================
+        #  Conditional Probability Ratios
+        # ==============================
+        covar_cols = st.sidebar.multiselect("Covariates for probability ratios", all_cols)
+        if covar_cols:
+            st.subheader("Conditional probability ratios")
+            res_full = pd.concat([df.reset_index(drop=True), res.reset_index(drop=True)], axis=1)
+            ratios = conditional_probability_ratios_by_level(res_full, "Classic", covar_cols, max_levels=8, n_boot=1000)
+            st.dataframe(ratios)
