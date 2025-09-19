@@ -281,9 +281,11 @@ if df is not None:
     st.sidebar.header("Classic Apostle thresholds")
     thr_x=st.sidebar.slider("Threshold X", 0.0, 1.0, 0.5, 0.01)
     thr_y=st.sidebar.slider("Threshold Y", 0.0, 1.0, 0.5, 0.01)
-    lab_a=st.sidebar.text_input("(X≥thr & Y≥
-        9:  TFN(80, 90, 100),
-        10: TFN(90, 100, 100)
+    lab_a = st.sidebar.text_input("(X≥thr & Y≥thr)", "Quadrant A")
+      lab_b = st.sidebar.text_input("(X<thr & Y≥thr)", "Quadrant B")
+      lab_c = st.sidebar.text_input("(X<thr & Y<thr)", "Quadrant C")
+      lab_d = st.sidebar.text_input("(X≥thr & Y<thr)", "Quadrant D")
+
     }
 def likert_map_1_11(): return {i: TFN((i-1)*10,(i-1)*10+10,(i-1)*10+20) for i in range(1,12)}
 
