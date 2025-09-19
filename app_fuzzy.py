@@ -189,10 +189,15 @@ def conditional_probability_ratios_by_level(df: pd.DataFrame, quad_col: str, cov
     return pd.DataFrame(rows)
 
 # ==============================
-# 5) Streamlit App
+# 5) Streamlit App (with session_state to persist results)
 # ==============================
 st.set_page_config(page_title="Fuzzy TOPSIS + Apostle", layout="wide")
 st.title("Fuzzy-Hybrid TOPSIS + Apostle Model")
+
+# Reset analysis if user asks
+if st.sidebar.button("🔄 Reset analysis"):
+    for k in ["analysis_done", "results", "ideal_solutions"]:
+        if k in st.session_state: del st.session_state[k]
 
 df=None
 up=st.file_uploader("Upload CSV or Excel",type=["csv","xlsx"])
@@ -204,14 +209,18 @@ if df is not None:
     st.sidebar.header("Latent variables")
     all_cols=list(df.columns)
     lname_x=st.sidebar.text_input("Latent X name",value="LatX")
-    items_x=st.sidebar.multiselect("Items for X",all_cols)
+    items_x=st.sidebar.multiselect("Items for X",all_cols, key="items_x")
     lname_y=st.sidebar.text_input("Latent Y name",value="LatY")
-    items_y=st.sidebar.multiselect("Items for Y",all_cols)
+    items_y=st.sidebar.multiselect("Items for Y",all_cols, key="items_y")
 
     st.sidebar.header("Scales per item")
     tfn_map_by_item={}; levels_by_item={}
     for it in items_x+items_y:
-        sc_choice=st.sidebar.selectbox(f"Scale for {it}",["Likert1-4","Likert1-5","Likert1-6","Likert1-7","Likert1-10","Likert1-11","Linear","Manual"],key=f"sc_{it}")
+        sc_choice=st.sidebar.selectbox(
+            f"Scale for {it}",
+            ["Likert1-4","Likert1-5","Likert1-6","Likert1-7","Likert1-10","Likert1-11","Linear","Manual"],
+            key=f"sc_{it}"
+        )
         if sc_choice=="Likert1-4": tfn_map_by_item[it]=likert_map_1_4(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
         elif sc_choice=="Likert1-5": tfn_map_by_item[it]=likert_map_1_5(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
         elif sc_choice=="Likert1-6": tfn_map_by_item[it]=likert_map_1_6(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
@@ -237,6 +246,7 @@ if df is not None:
     x_names=[st.sidebar.text_input(f"X name {i}",v) for i,v in enumerate(["LowX","MedLowX","MedHighX","HighX"])]
     y_names=[st.sidebar.text_input(f"Y name {i}",v) for i,v in enumerate(["LowY","MedLowY","MedHighY","HighY"])]
 
+    # Run analysis button
     if st.button("Run analysis") and items_x and items_y:
         idx={}; ideal_solutions={}
         for nm,items in {lname_x:items_x,lname_y:items_y}.items():
@@ -255,6 +265,16 @@ if df is not None:
         res=pd.DataFrame({f"idx_{lname_x}":x,f"idx_{lname_y}":y})
         res["Classic"]=apostle_quadrants(x,y,x_thr,y_thr,AA,AB,BA,BB)
         res["Extended4x4"]=eco_extended_labels_4x4(x,y,x_names,y_names)
+
+        st.session_state['analysis_done'] = True
+        st.session_state['results'] = res
+        st.session_state['ideal_solutions'] = ideal_solutions
+
+    # Show stored results (persist across reruns)
+    if st.session_state.get('analysis_done') and st.session_state.get('results') is not None:
+        res = st.session_state['results']
+        ideal_solutions = st.session_state['ideal_solutions']
+
         st.subheader("Results (individual)")
         st.dataframe(res)
 
@@ -264,12 +284,14 @@ if df is not None:
         # ==============================
         #  Group-level TOPSIS + summary
         # ==============================
-        group_cols = st.sidebar.multiselect("Group by columns", all_cols)
+        group_cols = st.sidebar.multiselect("Group by columns", list(df.columns), key="group_cols")
         if group_cols:
             summaries = []
             for gcol in group_cols:
                 for gval, dfg in df.groupby(gcol):
                     for nm, items in {lname_x: items_x, lname_y: items_y}.items():
+                        if not items:
+                            continue
                         mat = []
                         for it in items:
                             mat_item = df_to_tfn_matrix(dfg, [it], tfn_map_by_item[it], levels_by_item[it])
@@ -293,9 +315,14 @@ if df is not None:
         # ==============================
         #  Conditional Probability Ratios
         # ==============================
-        covar_cols = st.sidebar.multiselect("Covariates for probability ratios", all_cols)
+        covar_cols = st.sidebar.multiselect("Covariates for probability ratios", list(df.columns), key="covars")
         if covar_cols:
             st.subheader("Conditional probability ratios")
             res_full = pd.concat([df.reset_index(drop=True), res.reset_index(drop=True)], axis=1)
             ratios = conditional_probability_ratios_by_level(res_full, "Classic", covar_cols, max_levels=8, n_boot=1000)
             st.dataframe(ratios)
+
+# (optional) CSV download of individual results
+if st.session_state.get('results') is not None:
+    csv = st.session_state['results'].to_csv(index=False).encode('utf-8')
+    st.download_button("⬇️ Download individual results CSV", data=csv, file_name="topsis_individual_results.csv")
