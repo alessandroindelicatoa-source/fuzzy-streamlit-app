@@ -1,8 +1,8 @@
 \
-# app_fuzzy.py (final, corregido con claves distintas)
+# app_fuzzy.py (versión final con nombres fijos para Classic Apostle y Extended 4x4)
 import math
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -18,6 +18,10 @@ class TFN:
     def scale(self, w: float) -> "TFN":
         return TFN(self.a*w, self.b*w, self.c*w)
 
+def likert_map_1_4(): return {1: TFN(0,0,20), 2: TFN(16,33,60), 3: TFN(49,66,83), 4: TFN(80,100,100)}
+def likert_map_1_5(): return {1: TFN(0,0,30), 2: TFN(20,30,40), 3: TFN(30,50,70), 4: TFN(60,70,80), 5: TFN(70,100,100)}
+def likert_map_1_6(): return {1: TFN(0,0,15), 2: TFN(25,40,55), 3: TFN(45,60,75), 4: TFN(70,80,90), 5: TFN(85,100,100), 6: TFN(90,100,100)}
+def likert_map_1_7(): return {i: TFN((i-1)*15,(i-1)*15+10,(i-1)*15+20) for i in range(1,8)}
 def likert_map_1_10():
     return {
         1:  TFN(0, 0, 10),
@@ -31,6 +35,23 @@ def likert_map_1_10():
         9:  TFN(80, 90, 100),
         10: TFN(90, 100, 100)
     }
+
+def likert_map_1_11(): return {i: TFN((i-1)*10,(i-1)*10+10,(i-1)*10+20) for i in range(1,12)}
+
+def linear_tfn_map(levels: List[int]) -> Dict[int, TFN]:
+    K = len(levels)
+    centers = np.linspace(0, 100, K)
+    mapping = {}
+    for i, lv in enumerate(levels):
+        b = float(centers[i])
+        if i == 0:
+            a, c = 0.0, (centers[i]+centers[i+1])/2
+        elif i == K-1:
+            a, c = (centers[i-1]+centers[i])/2, 100.0
+        else:
+            a, c = (centers[i-1]+centers[i])/2, (centers[i]+centers[i+1])/2
+        mapping[lv] = TFN(a, b, c)
+    return mapping
 
 def ensure_tfn(x):
     if isinstance(x, TFN): return x
@@ -98,41 +119,14 @@ def df_to_tfn_matrix(df: pd.DataFrame, cols: List[str], tfn_map: Dict[int,TFN], 
         mat.append(row)
     return mat
 
-# --- Group TOPSIS + PIS/NIS global ---
-def group_topsis_and_ideals(df: pd.DataFrame, items: List[str], group_col: str):
-    agg={}; groups=list(df[group_col].dropna().unique())
-    for g in groups:
-        dfg=df[df[group_col]==g]; row={}
-        for it in items:
-            vals=pd.to_numeric(dfg[it], errors="coerce").dropna()
-            row[it]=vals.mean() if not vals.empty else 0.0
-        agg[g]=row
-    V=pd.DataFrame.from_dict(agg, orient="index")[items]
-    pis=V.max(axis=0); nis=V.min(axis=0)
-    S_plus=np.sqrt(((V - pis)**2).sum(axis=1))
-    S_minus=np.sqrt(((V - nis)**2).sum(axis=1))
-    topsis=(S_minus/(S_plus+S_minus+1e-12)).clip(0,1)
-    group_df=pd.DataFrame({"Group":V.index, "TOPSIS": topsis.values}).sort_values("TOPSIS", ascending=False)
-    rows=[]
-    for it in items:
-        rows.append({
-            "Item": it,
-            "PIS": round(float(V[it].max()),4),
-            "PIS_Group": V[it].idxmax(),
-            "NIS": round(float(V[it].min()),4),
-            "NIS_Group": V[it].idxmin()
-        })
-    ideals_df=pd.DataFrame(rows)
-    return group_df, ideals_df
-
 # --- Classic Apostle ---
-def classic_apostle_threshold(x,y,thr_x,thr_y,labels4):
-    a,b,c,d=labels4; out=[]
+def classic_apostle_threshold(x,y,thr_x,thr_y):
+    out=[]
     for xi,yi in zip(x,y):
-        if xi>=thr_x and yi>=thr_y: out.append(a)
-        elif xi<thr_x and yi>=thr_y: out.append(b)
-        elif xi<thr_x and yi<thr_y: out.append(c)
-        else: out.append(d)
+        if xi>=thr_x and yi>=thr_y: out.append("Apostles")
+        elif xi<thr_x and yi>=thr_y: out.append("Hostages")
+        elif xi<thr_x and yi<thr_y: out.append("Defectors")
+        else: out.append("Mercenaries")
     return out
 
 # --- Extended Apostle ---
@@ -157,9 +151,6 @@ def extended_apostle_from_memberships(Ux: np.ndarray, Uy: np.ndarray, alpha: flo
 st.set_page_config(page_title="Fuzzy TOPSIS Final", layout="wide")
 st.title("Fuzzy-Hybrid TOPSIS + Group TOPSIS + Apostle + Ratios")
 
-if st.sidebar.button("🔄 Reset analysis"):
-    for k in list(st.session_state.keys()): del st.session_state[k]
-
 df=None
 up=st.file_uploader("Upload CSV or Excel", type=["csv","xlsx"])
 if up is not None:
@@ -175,10 +166,6 @@ if df is not None:
 
     thr_x=st.sidebar.slider("Threshold X", 0.0, 1.0, 0.5, 0.01)
     thr_y=st.sidebar.slider("Threshold Y", 0.0, 1.0, 0.5, 0.01)
-    lab_a=st.sidebar.text_input("(X≥thr & Y≥thr)", "Quadrant A")
-    lab_b=st.sidebar.text_input("(X<thr & Y≥thr)", "Quadrant B")
-    lab_c=st.sidebar.text_input("(X<thr & Y<thr)", "Quadrant C")
-    lab_d=st.sidebar.text_input("(X≥thr & Y<thr)", "Quadrant D")
     alpha=st.sidebar.slider("Extended FCM alpha", 0.1, 0.9, 0.5, 0.05)
 
     if st.button("Run analysis") and items_x and items_y:
@@ -192,13 +179,8 @@ if df is not None:
                     for r,row in enumerate(m_item): mat[r].append(row[0])
             idx[nm]=fuzzy_topsis_cc(mat,[True]*len(items),[1.0]*len(items))
         x=np.array(idx[lname_x]); y=np.array(idx[lname_y])
-        classic=classic_apostle_threshold(x,y,thr_x,thr_y,[lab_a,lab_b,lab_c,lab_d])
+        classic=classic_apostle_threshold(x,y,thr_x,thr_y)
         Ux,_=fuzzy_cmeans_memberships(x); Uy,_=fuzzy_cmeans_memberships(y)
         extended=extended_apostle_from_memberships(Ux,Uy,alpha=alpha)
-        res=pd.DataFrame({f"{lname_x}":x, f"{lname_y}":y, "Classic":classic, "Extended":extended})
-        st.session_state['results']=res
-
-    if 'results' in st.session_state:
-        res=st.session_state['results']
-        st.subheader("📊 Individual TOPSIS")
+        res=pd.DataFrame({f"{lname_x}":x, f"{lname_y}":y, "Classic":classic, "Extended4x4":extended})
         st.dataframe(res)
