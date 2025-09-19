@@ -200,10 +200,13 @@ if df is not None:
         for nm,items in {lname_x:items_x,lname_y:items_y}.items():
             mat=[]
             for it in items:
-                mat_item=df_to_tfn_matrix(df,[it],tfn_map_by_item[it],levels_by_item[it])
-                if not mat: mat=[[x] for x in mat_item]
+                mat_item = df_to_tfn_matrix(df, [it], tfn_map_by_item[it], levels_by_item[it])
+                if not mat:
+                    # aquí mat_item es [[TFN], [TFN], ...] → me quedo con row[0]
+                    mat = [[row[0]] for row in mat_item]
                 else:
-                    for r,row in enumerate(mat_item): mat[r].append(row[0])
+                    for r, row in enumerate(mat_item):
+                        mat[r].append(row[0])
             idx[nm], fpis, fnis = fuzzy_topsis_cc(mat,[True]*len(items),[1.0]*len(items))
             ideal_solutions[nm]={"PIS":fpis,"NIS":fnis}
         x,y=idx[lname_x],idx[lname_y]
