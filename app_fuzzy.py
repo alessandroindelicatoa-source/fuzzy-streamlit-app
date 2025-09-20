@@ -341,7 +341,7 @@ def probability_ratios_for_target(df: pd.DataFrame, target_col: str, covar_cols:
 st.set_page_config(page_title="Fuzzy-Hybrid TOPSIS Suite", layout="wide")
 gate()  # comment out this line if you want open access
 
-st.title("Fuzzy-Hybrid TOPSIS + Unified Group TOPSIS + Apostle (Classic/Extended) + Ratios")
+st.title("Fuzzy Quadrant Mapper")
 
 # Upload
 df=None
