@@ -18,6 +18,8 @@ def gate():
       [passwords]
       admin = "yourpass"
       alice = "1234"
+
+    Remove/comment the call to gate() below to disable the login.
     """
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
@@ -149,7 +151,7 @@ def df_to_tfn_matrix(df: pd.DataFrame, cols: List[str], tfn_map: Dict[int,TFN], 
     return mat
 
 # ==============================
-# 3) Group TOPSIS + Unified PIS/NIS
+# 3) Group TOPSIS + Global PIS/NIS
 # ==============================
 def group_defuzz_means(dfg: pd.DataFrame, items: List[str],
                        tfn_maps: Dict[str,Dict[int,TFN]], levels_by_item: Dict[str,List[int]]) -> Dict[str, float]:
@@ -176,6 +178,10 @@ def unified_group_topsis_table(df: pd.DataFrame,
                                levels_by_item: Dict[str,List[int]],
                                group_cols: List[str],
                                name_x: str, name_y: str) -> pd.DataFrame:
+    """
+    Returns one flat table:
+    Variable | Item | Topsis-LatX | Topsis-LatY
+    """
     out_rows = []
     if not group_cols:
         out_rows.append({"Variable":"ALL","Item":"ALL","Topsis-LatX":0.5,"Topsis-LatY":0.5})
@@ -211,6 +217,10 @@ def global_pis_nis_across_items(df: pd.DataFrame, items_all: List[str],
                                 tfn_maps: Dict[str,Dict[int,TFN]],
                                 levels_by_item: Dict[str,List[int]],
                                 group_cols: List[str]) -> pd.DataFrame:
+    """
+    ONE table across ALL items (X ∪ Y), not per latent.
+    Columns -> Item | PIS | PIS_Key | NIS | NIS_Key
+    """
     rows = []
     for it in items_all:
         levels = levels_by_item[it]; mapping = tfn_maps[it]
@@ -264,7 +274,7 @@ def global_pis_nis_across_items(df: pd.DataFrame, items_all: List[str],
 # ==============================
 # 4) Quadrants (Classic + Extended ECO 4×4)
 # ==============================
-def classic_apostle_threshold(x, y, thr_x, thr_y):
+def classic_apostle_threshold(x, y, thr_x=0.5, thr_y=0.5):
     out=[]
     for xi, yi in zip(x, y):
         if xi>=thr_x and yi>=thr_y: out.append("Apostles")
@@ -281,14 +291,18 @@ def eco_fuzzy_sets_4(val):
     if 0.33<=val<=1: medhigh=1-abs(val-0.66)/0.34
     return (max(low,0),max(medlow,0),max(medhigh,0),max(high,0))
 
-def eco_extended_labels_4x4(x, y,
+def eco_extended_label(xi, yi, alpha,
+                       xn=["LowX","MedLowX","MedHighX","HighX"],
+                       yn=["LowY","MedLowY","MedHighY","HighY"]):
+    # argmax selection; alpha is available if later you want hard gating
+    lx=np.array(eco_fuzzy_sets_4(xi)); ly=np.array(eco_fuzzy_sets_4(yi))
+    ix = lx.argmax(); iy = ly.argmax()
+    return f"{xn[ix]}|{yn[iy]}"
+
+def eco_extended_labels_4x4(x, y, alpha,
                             xn=["LowX","MedLowX","MedHighX","HighX"],
                             yn=["LowY","MedLowY","MedHighY","HighY"]):
-    labels=[]
-    for xi, yi in zip(x, y):
-        lx=np.array(eco_fuzzy_sets_4(xi)); ly=np.array(eco_fuzzy_sets_4(yi))
-        labels.append(f"{xn[lx.argmax()]}|{yn[ly.argmax()]}")
-    return labels
+    return [eco_extended_label(xi, yi, alpha, xn, yn) for xi, yi in zip(x, y)]
 
 # ==============================
 # 5) Probability Ratios (with bootstrap CIs)
@@ -302,7 +316,7 @@ def _prob_ratio_bootstrap(A: np.ndarray, B: np.ndarray, n_boot: int = 1000, seed
     if not vals: return np.nan,np.nan,np.nan
     return float(np.mean(vals)), float(np.percentile(vals,2.5)), float(np.percentile(vals,97.5))
 
-def conditional_probability_ratios_by_level(df: pd.DataFrame, target_col: str, covar_cols: List[str], max_levels: int = 12, n_boot: int = 1000):
+def probability_ratios_for_target(df: pd.DataFrame, target_col: str, covar_cols: List[str], max_levels: int = 12, n_boot: int = 1000):
     rows=[]
     for cov in covar_cols:
         series=df[cov]; unique=series.dropna().unique()
@@ -312,16 +326,20 @@ def conditional_probability_ratios_by_level(df: pd.DataFrame, target_col: str, c
         for q in targets:
             A=(df[target_col]==q).astype(int).to_numpy()
             for name,val in levels:
-                B=(~series.isin([v for _,v in levels[:-1]])).astype(int).to_numpy() if val is None else (series==val).astype(int).to_numpy()
+                if val is None:
+                    B=(~series.isin([v for _,v in levels[:-1]])).astype(int).to_numpy()
+                else:
+                    B=(series==val).astype(int).to_numpy()
                 mean,lo,hi=_prob_ratio_bootstrap(A,B,n_boot=n_boot)
-                rows.append({"Target":str(q),"Covariate":cov,"Level":name,"Mean":round(mean,3),"CI_low":round(lo,3),"CI_high":round(hi,3)})
+                rows.append({"Covariate":cov,"Group":name,"Target":str(q),
+                             "Ratio":round(mean,3),"CI_low":round(lo,3),"CI_high":round(hi,3)})
     return pd.DataFrame(rows)
 
 # ==============================
 # 6) Streamlit App
 # ==============================
 st.set_page_config(page_title="Fuzzy-Hybrid TOPSIS Suite", layout="wide")
-gate()  # comment this line out if you do NOT want a password gate
+gate()  # comment out this line if you want open access
 
 st.title("Fuzzy-Hybrid TOPSIS + Unified Group TOPSIS + Apostle (Classic/Extended) + Ratios")
 
@@ -372,10 +390,16 @@ if df is not None:
                 a,b,c=[float(x) for x in abctxt.split(",")]
                 tfn_map_by_item[it][l]=TFN(a,b,c)
 
-    # Apostle settings
-    st.sidebar.header("Apostle settings")
-    thr_x=st.sidebar.slider("Classic threshold X", 0.0, 1.0, 0.5, 0.01)
-    thr_y=st.sidebar.slider("Classic threshold Y", 0.0, 1.0, 0.5, 0.01)
+    # Apostle parameters (Classic fixed at 0.5; Extended alpha editable)
+    st.sidebar.header("Extended Apostle (alpha)")
+    alpha=st.sidebar.slider("Extended FCM alpha", 0.1, 0.9, 0.5, 0.05)
+
+    # Editable labels for Simplified Quadrants (4 targets)
+    st.sidebar.header("Quadrant-4 labels (for ratios)")
+    q4_hh = st.sidebar.text_input("HighX|HighY label", value="HighX|HighY")
+    q4_hl = st.sidebar.text_input("HighX|LowY label",  value="HighX|LowY")
+    q4_lh = st.sidebar.text_input("LowX|HighY label",  value="LowX|HighY")
+    q4_ll = st.sidebar.text_input("LowX|LowY label",   value="LowX|LowY")
 
     # Variables for grouping and ratios
     st.sidebar.header("Analysis variables")
@@ -395,8 +419,8 @@ if df is not None:
             idx[nm]=fuzzy_topsis_cc(mat,[True]*len(items),[1.0]*len(items))
 
         x=np.array(idx[lname_x]); y=np.array(idx[lname_y])
-        classic = classic_apostle_threshold(x,y,thr_x,thr_y)
-        extended = eco_extended_labels_4x4(x,y)
+        classic = classic_apostle_threshold(x,y,0.5,0.5)
+        extended = eco_extended_labels_4x4(x,y,alpha)
 
         res=pd.DataFrame({f"{lname_x}":x, f"{lname_y}":y, "Classic":classic, "Extended4x4":extended})
         st.session_state['results']=res
@@ -404,6 +428,7 @@ if df is not None:
         st.session_state['items_x']=items_x; st.session_state['items_y']=items_y
         st.session_state['tfn_map_by_item']=tfn_map_by_item; st.session_state['levels_by_item']=levels_by_item
         st.session_state['group_cols']=group_cols; st.session_state['ratio_cols']=ratio_cols
+        st.session_state['q4_labels']=(q4_hh,q4_hl,q4_lh,q4_ll)
         st.success("Analysis completed.")
 
     # Display
@@ -413,6 +438,7 @@ if df is not None:
         items_x=st.session_state['items_x']; items_y=st.session_state['items_y']
         tfn_map_by_item=st.session_state['tfn_map_by_item']; levels_by_item=st.session_state['levels_by_item']
         group_cols=st.session_state['group_cols']; ratio_cols=st.session_state['ratio_cols']
+        q4_hh,q4_hl,q4_lh,q4_ll = st.session_state['q4_labels']
 
         st.subheader("📊 Individual TOPSIS indices")
         st.dataframe(res)
@@ -437,14 +463,37 @@ if df is not None:
                            data=unified_groups.to_csv(index=False).encode("utf-8"),
                            file_name="group_topsis_unified.csv")
 
-        # ---- Probability Ratios
-        st.subheader("📈 Conditional Probability Ratios")
+        # ---- Probability Ratios (Extended 16 categories)
+        st.subheader("📊 Probability Ratios — Extended Apostle (16 categories)")
+        full_ext = pd.concat([df.reset_index(drop=True), res.reset_index(drop=True)], axis=1)
         if ratio_cols:
-            full = pd.concat([df.reset_index(drop=True), res.reset_index(drop=True)], axis=1)
-            ratios = conditional_probability_ratios_by_level(full, "Classic", ratio_cols, max_levels=12, n_boot=1000)
-            st.dataframe(ratios)
-            st.download_button("⬇️ Download CSV — Probability Ratios",
-                               data=ratios.to_csv(index=False).encode("utf-8"),
-                               file_name="probability_ratios.csv")
+            ratios_extended = probability_ratios_for_target(full_ext, "Extended4x4", ratio_cols, max_levels=12, n_boot=1000)
+            st.dataframe(ratios_extended)
+            st.download_button("⬇️ Download Extended Ratios",
+                               data=ratios_extended.to_csv(index=False).encode("utf-8"),
+                               file_name="ratios_extended.csv")
         else:
-            st.info("Select covariates in the sidebar to compute Probability Ratios.")
+            st.info("Select covariates to compute Extended Apostle ratios.")
+
+        # ---- Probability Ratios (Simplified Quadrants 4, editable labels)
+        st.subheader("📊 Probability Ratios — Simplified Quadrants (4 categories)")
+        # Create quadrant-4 target
+        thr_x=0.5; thr_y=0.5
+        def q4_label(xv,yv):
+            if xv>=thr_x and yv>=thr_y: return q4_hh
+            if xv>=thr_x and yv<thr_y:  return q4_hl
+            if xv<thr_x  and yv>=thr_y: return q4_lh
+            return q4_ll
+
+        q4 = [q4_label(xv,yv) for xv,yv in zip(res[lname_x], res[lname_y])]
+        full_q4 = pd.concat([df.reset_index(drop=True), res.reset_index(drop=True)], axis=1)
+        full_q4["Quadrant4"] = q4
+
+        if ratio_cols:
+            ratios_quadrants4 = probability_ratios_for_target(full_q4, "Quadrant4", ratio_cols, max_levels=12, n_boot=1000)
+            st.dataframe(ratios_quadrants4)
+            st.download_button("⬇️ Download Quadrant4 Ratios",
+                               data=ratios_quadrants4.to_csv(index=False).encode("utf-8"),
+                               file_name="ratios_quadrants4.csv")
+        else:
+            st.info("Select covariates to compute Quadrant-4 ratios.")
