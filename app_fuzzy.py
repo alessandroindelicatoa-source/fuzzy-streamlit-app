@@ -1,359 +1,151 @@
 
-# app_fuzzy.py — FINAL
-# -*- coding: utf-8 -*-
-# Fuzzy-Hybrid TOPSIS Suite (FINAL)
-# - Toolbar de escalas TFN por ítem
-# - TOPSIS individual
-# - TOPSIS por grupo (tabla simple de índices) + PIS/NIS GLOBAL
-# - Classic Apostle (labels fijos: Apostles/Hostages/Defectors/Mercenaries)
-# - Extended 4x4 (ECO) con etiquetas estilo 'MedHighX|MedHighY'
-# - Probability ratios (covariables seleccionables)
-# - Exportación CSV (individual, grupo, PIS/NIS global, ratios)
-
-import math
-from dataclasses import dataclass
-from typing import Dict, List, Tuple
-import numpy as np
-import pandas as pd
 import streamlit as st
-import skfuzzy as fuzz
+import pandas as pd
+import numpy as np
+from dataclasses import dataclass
+from typing import Dict, List
 
-# ==============================
-# TFN y escalas
-# ==============================
 @dataclass(frozen=True)
 class TFN:
     a: float; b: float; c: float
-    def __post_init__(self):
-        if not (self.a <= self.b <= self.c):
-            raise ValueError("TFN requiere a ≤ b ≤ c.")
-    def scale(self, w: float) -> "TFN":
-        return TFN(self.a*w, self.b*w, self.c*w)
-
-def likert_map_1_4(): return {1: TFN(0,0,20), 2: TFN(16,33,60), 3: TFN(49,66,83), 4: TFN(80,100,100)}
-def likert_map_1_5(): return {1: TFN(0,0,30), 2: TFN(20,30,40), 3: TFN(30,50,70), 4: TFN(60,70,80), 5: TFN(70,100,100)}
-def likert_map_1_6(): return {1: TFN(0,0,15), 2: TFN(25,40,55), 3: TFN(45,60,75), 4: TFN(70,80,90), 5: TFN(85,100,100), 6: TFN(90,100,100)}
-def likert_map_1_7(): return {i: TFN((i-1)*15,(i-1)*15+10,(i-1)*15+20) for i in range(1,8)}
-def likert_map_1_10():
-    return {
-        1:  TFN(0, 0, 10),
-        2:  TFN(0, 10, 20),
-        3:  TFN(10, 20, 30),
-        4:  TFN(20, 30, 40),
-        5:  TFN(30, 40, 50),
-        6:  TFN(50, 60, 70),
-        7:  TFN(60, 70, 80),
-        8:  TFN(70, 80, 90),
-        9:  TFN(80, 90, 100),
-        10: TFN(90, 100, 100)
-    }
-def likert_map_1_11(): return {i: TFN((i-1)*10,(i-1)*10+10,(i-1)*10+20) for i in range(1,12)}
-
-def linear_tfn_map(levels: List[int]) -> Dict[int, TFN]:
-    K = len(levels)
-    centers = np.linspace(0, 100, K)
-    mapping = {}
-    for i, lv in enumerate(levels):
-        b = float(centers[i])
-        if i == 0:
-            a, c = 0.0, (centers[i]+centers[i+1])/2
-        elif i == K-1:
-            a, c = (centers[i-1]+centers[i])/2, 100.0
-        else:
-            a, c = (centers[i-1]+centers[i])/2, (centers[i]+centers[i+1])/2
-        mapping[lv] = TFN(a, b, c)
-    return mapping
-
-def ensure_tfn(x):
-    if isinstance(x, TFN): return x
-    if isinstance(x, (int, float)): return TFN(x, x, x)
-    if isinstance(x, (list, tuple)) and len(x)==3: return TFN(*x)
-    raise ValueError(f"No se puede convertir {x} a TFN")
+    def scale(self,w:float): return TFN(self.a*w,self.b*w,self.c*w)
 
 def defuzz_buckley(x: TFN) -> float:
-    return (x.a + 2*x.b + x.c) / 4.0
-
-# ==============================
-# Fuzzy–Hybrid TOPSIS (individual)
-# ==============================
-def _normalize_fuzzy_matrix(matrix, is_benefit):
-    m,n=len(matrix),len(matrix[0])
-    matrix=[[ensure_tfn(x) for x in row] for row in matrix]
-    c_max=[max(matrix[i][j].c for i in range(m)) for j in range(n)]
-    a_min=[min(matrix[i][j].a for i in range(m)) for j in range(n)]
-    out=[]
-    for i in range(m):
-        row=[]
-        for j in range(n):
-            x=matrix[i][j]
-            if is_benefit[j]:
-                denom=c_max[j] if c_max[j]!=0 else 1
-                row.append(TFN(x.a/denom,x.b/denom,x.c/denom))
-            else:
-                amin=a_min[j] if a_min[j]!=0 else 1
-                row.append(TFN(amin/x.c, amin/(x.b if x.b else 1e-9), amin/(x.a if x.a else 1e-9)))
-        out.append(row)
-    return out
-
-def _apply_weights(matrix,weights):
-    wsum=sum(weights); w=[wi/wsum for wi in weights]
-    return [[matrix[i][j].scale(w[j]) for j in range(len(matrix[0]))] for i in range(len(matrix))]
-
-def _fuzzy_distance(x,y): return math.sqrt((x.a-y.a)**2+(x.b-y.b)**2+(x.c-y.c)**2)
-
-def fuzzy_topsis_cc(matrix,is_benefit,weights=None):
-    m,n=len(matrix),len(matrix[0])
-    if weights is None: weights=[1/n]*n
-    norm=_normalize_fuzzy_matrix(matrix,is_benefit)
-    vw=_apply_weights(norm,weights)
-    fpis=[]; fnis=[]
-    for j in range(n):
-        col=[vw[i][j] for i in range(m)]
-        fpis.append(TFN(max(x.a for x in col),max(x.b for x in col),max(x.c for x in col)))
-        fnis.append(TFN(min(x.a for x in col),min(x.b for x in col),min(x.c for x in col)))
-    d_plus=np.zeros(m); d_minus=np.zeros(m)
-    for i in range(m):
-        for j in range(n):
-            d_plus[i]+=_fuzzy_distance(vw[i][j],fpis[j])**2
-            d_minus[i]+=_fuzzy_distance(vw[i][j],fnis[j])**2
-        d_plus[i]=math.sqrt(d_plus[i]); d_minus[i]=math.sqrt(d_minus[i])
-    return np.clip(d_minus/(d_plus+d_minus+1e-12),0,1)
-
-def df_to_tfn_matrix(df: pd.DataFrame, cols: List[str], tfn_map: Dict[int,TFN], levels: List[int]):
-    m=df.shape[0]; mat=[]; median=int(np.median(levels)); fallback=tfn_map[median]
-    for i in range(m):
-        row=[]
-        for c in cols:
-            v=df.iloc[i][c]
-            try: iv=int(v)
-            except: iv=None
-            if iv not in levels: iv=median
-            row.append(tfn_map.get(iv,fallback))
-        mat.append(row)
-    return mat
-
-# ==============================
-# Group TOPSIS (índice) + PIS/NIS GLOBAL
-# ==============================
-def group_topsis_and_ideals(df: pd.DataFrame, items: List[str], tfn_maps: Dict[str,Dict[int,TFN]], levels_by_item: Dict[str,List[int]], group_col: str):
-    agg={}; groups=list(df[group_col].dropna().unique())
-    for g in groups:
-        dfg=df[df[group_col]==g]; row={}
-        for it in items:
-            levels=levels_by_item[it]; mapping=tfn_maps[it]; med=int(np.median(levels)); fallback=mapping[med]
-            tfns=[]
-            for v in dfg[it].tolist():
-                try: iv=int(v)
-                except: iv=None
-                if iv not in levels: iv=med
-                tfns.append(mapping.get(iv,fallback))
-            if tfns:
-                a=np.mean([t.a for t in tfns]); b=np.mean([t.b for t in tfns]); c=np.mean([t.c for t in tfns])
-            else:
-                a=b=c=0.0
-            row[it]=defuzz_buckley(TFN(a,b,c))
-        agg[g]=row
-    V=pd.DataFrame.from_dict(agg, orient="index")[items]
-    pis=V.max(axis=0); nis=V.min(axis=0)
-    S_plus=np.sqrt(((V - pis)**2).sum(axis=1))
-    S_minus=np.sqrt(((V - nis)**2).sum(axis=1))
-    topsis=(S_minus/(S_plus+S_minus+1e-12)).clip(0,1)
-    group_df=pd.DataFrame({"Group":V.index, "TOPSIS": topsis.values}).sort_values("TOPSIS", ascending=False)
-    rows=[]
-    for it in items:
-        rows.append({
-            "Item": it,
-            "PIS": round(float(V[it].max()),4),
-            "PIS_Group": V[it].idxmax(),
-            "NIS": round(float(V[it].min()),4),
-            "NIS_Group": V[it].idxmin()
-        })
-    ideals_df=pd.DataFrame(rows, columns=["Item","PIS","PIS_Group","NIS","NIS_Group"])
-    return group_df, ideals_df
-
-# ==============================
-# Classic Apostle (labels fijos)
-# ==============================
-def classic_apostle_threshold(x,y,thr_x,thr_y):
-    out=[]
-    for xi,yi in zip(x,y):
-        if xi>=thr_x and yi>=thr_y: out.append("Apostles")
-        elif xi<thr_x and yi>=thr_y: out.append("Hostages")
-        elif xi<thr_x and yi<thr_y: out.append("Defectors")
-        else: out.append("Mercenaries")
-    return out
-
-# ==============================
-# Extended 4x4 (ECO sets) con etiquetas
-# ==============================
-def eco_fuzzy_sets_4(val):
-    low=medlow=medhigh=high=0.0
-    if val<=0.33: low=1-val/0.33
-    if val>=0.66: high=(val-0.66)/0.34 if val<=1 else 1
-    if 0<=val<=0.66: medlow=1-abs(val-0.33)/0.33
-    if 0.33<=val<=1: medhigh=1-abs(val-0.66)/0.34
-    return (max(low,0),max(medlow,0),max(medhigh,0),max(high,0))
-
-def eco_extended_labels_4x4(x,y, xn=["LowX","MedLowX","MedHighX","HighX"], yn=["LowY","MedLowY","MedHighY","HighY"]):
-    labels=[]
-    for xi,yi in zip(x,y):
-        lx=np.array(eco_fuzzy_sets_4(xi)); ly=np.array(eco_fuzzy_sets_4(yi))
-        labels.append(f"{xn[lx.argmax()]}|{yn[ly.argmax()]}")
-    return labels
-
-# ==============================
-# Probability ratios
-# ==============================
-def _prob_ratio_bootstrap(A: np.ndarray, B: np.ndarray, n_boot: int = 1000, seed: int = 42):
-    rng=np.random.default_rng(seed); N=len(A); vals=[]
-    for _ in range(n_boot):
-        idx=rng.integers(0,N,N); As=A[idx]; Bs=B[idx]
-        pA=As.mean(); pB=Bs.mean(); pAB=(As & Bs).mean()
-        if pA>0 and pB>0: vals.append(pAB/(pA*pB))
-    if not vals: return np.nan,np.nan,np.nan
-    return float(np.mean(vals)), float(np.percentile(vals,2.5)), float(np.percentile(vals,97.5))
-
-def conditional_probability_ratios_by_level(df: pd.DataFrame, target_col: str, covar_cols: List[str], max_levels: int = 12, n_boot: int = 1000):
-    rows=[]
-    for cov in covar_cols:
-        series=df[cov]; unique=series.dropna().unique()
-        levels=[(str(v),v) for v in sorted(unique, key=lambda x: str(x))[:max_levels]]
-        if len(unique)>max_levels: levels.append(("OTHER",None))
-        for q in df[target_col].dropna().unique():
-            A=(df[target_col]==q).astype(int).to_numpy()
-            for name,val in levels:
-                B=(~series.isin([v for _,v in levels[:-1]])).astype(int).to_numpy() if val is None else (series==val).astype(int).to_numpy()
-                mean,lo,hi=_prob_ratio_bootstrap(A,B,n_boot=n_boot)
-                rows.append({"Target":str(q),"Covariate":cov,"Level":name,"Mean":round(mean,3),"CI_low":round(lo,3),"CI_high":round(hi,3)})
-    return pd.DataFrame(rows)
+    return (x.a + 2*x.b + x.c)/4.0
 
 # ==============================
 # Streamlit App
 # ==============================
-st.set_page_config(page_title="Fuzzy TOPSIS (FINAL)", layout="wide")
-st.title("Fuzzy-Hybrid TOPSIS + Group TOPSIS + Apostle (Classic/Extended) + Ratios")
+st.title("Scaffold")
+if 'results' in st.session_state:
+    st.subheader("📊 Resultados individuales (TOPSIS)")
 
-df=None
-up=st.file_uploader("Upload CSV or Excel", type=["csv","xlsx"])
-if up is not None:
-    df=pd.read_csv(up) if up.name.endswith(".csv") else pd.read_excel(up)
-    st.dataframe(df.head())
 
-if df is not None:
-    all_cols=list(df.columns)
+# --- NEW: Global PIS/NIS across ALL items (X ∪ Y) and ALL selected grouping columns ---
+def global_pis_nis_across_items(df: pd.DataFrame, items_all: List[str],
+                                tfn_maps: Dict[str,Dict[int,TFN]],
+                                levels_by_item: Dict[str,List[int]],
+                                group_cols: List[str]) -> pd.DataFrame:
+    rows = []
+    for it in items_all:
+        levels = levels_by_item[it]; mapping = tfn_maps[it]
+        med = int(np.median(levels)); fallback = mapping[med]
+        best_val = -np.inf; best_key = None
+        worst_val = np.inf; worst_key = None
 
-    st.sidebar.header("Latent variables")
-    lname_x=st.sidebar.text_input("Latent X name", value="X")
-    items_x=st.sidebar.multiselect("Items for X", all_cols, key="items_x_widget")
-    lname_y=st.sidebar.text_input("Latent Y name", value="Y")
-    items_y=st.sidebar.multiselect("Items for Y", all_cols, key="items_y_widget")
-
-    st.sidebar.header("Escalas por ítem (TFN)")
-    tfn_map_by_item={}; levels_by_item={}
-    for it in items_x+items_y:
-        sc_choice=st.sidebar.selectbox(f"Escala para {it}",
-            ["Likert1-4","Likert1-5","Likert1-6","Likert1-7","Likert1-10","Likert1-11","Linear","Manual"],
-            key=f"sc_{it}")
-        if sc_choice=="Likert1-4":
-            tfn_map_by_item[it]=likert_map_1_4(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
-        elif sc_choice=="Likert1-5":
-            tfn_map_by_item[it]=likert_map_1_5(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
-        elif sc_choice=="Likert1-6":
-            tfn_map_by_item[it]=likert_map_1_6(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
-        elif sc_choice=="Likert1-7":
-            tfn_map_by_item[it]=likert_map_1_7(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
-        elif sc_choice=="Likert1-10":
-            tfn_map_by_item[it]=likert_map_1_10(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
-        elif sc_choice=="Likert1-11":
-            tfn_map_by_item[it]=likert_map_1_11(); levels_by_item[it]=list(tfn_map_by_item[it].keys())
-        elif sc_choice=="Linear":
-            lv=[int(x) for x in st.sidebar.text_input(f"Niveles para {it}", value="1,2,3,4,5", key=f"lv_{it}").split(",")]
-            tfn_map_by_item[it]=linear_tfn_map(lv); levels_by_item[it]=lv
+        if not group_cols:
+            tfns = []
+            for v in df[it].tolist():
+                try: iv = int(v)
+                except: iv = None
+                if iv not in levels: iv = med
+                tfns.append(mapping.get(iv, fallback))
+            if tfns:
+                a = np.mean([t.a for t in tfns]); b = np.mean([t.b for t in tfns]); c = np.mean([t.c for t in tfns])
+                val = defuzz_buckley(TFN(a,b,c))
+            else:
+                val = 0.0
+            best_val = val; best_key = "ALL"
+            worst_val = val; worst_key = "ALL"
         else:
-            lv=[int(x) for x in st.sidebar.text_input(f"Niveles para {it}", value="1,2,3,4,5", key=f"lvman_{it}").split(",")]
-            levels_by_item[it]=lv; tfn_map_by_item[it]={}
-            for l in lv:
-                abctxt=st.sidebar.text_input(f"{it}-{l} TFN", value="0,0,25", key=f"tfn_{it}_{l}")
-                a,b,c=[float(x) for x in abctxt.split(",")]
-                tfn_map_by_item[it][l]=TFN(a,b,c)
+            for gcol in group_cols:
+                for gval, dfg in df.groupby(gcol, dropna=True):
+                    tfns = []
+                    for v in dfg[it].tolist():
+                        try: iv = int(v)
+                        except: iv = None
+                        if iv not in levels: iv = med
+                        tfns.append(mapping.get(iv, fallback))
+                    if tfns:
+                        a = np.mean([t.a for t in tfns]); b = np.mean([t.b for t in tfns]); c = np.mean([t.c for t in tfns])
+                        val = defuzz_buckley(TFN(a,b,c))
+                    else:
+                        val = 0.0
+                    key = f"{gcol}={gval}"
+                    if val > best_val:
+                        best_val = val; best_key = key
+                    if val < worst_val:
+                        worst_val = val; worst_key = key
 
-    st.sidebar.header("Apostle settings")
-    thr_x=st.sidebar.slider("Classic threshold X", 0.0, 1.0, 0.5, 0.01)
-    thr_y=st.sidebar.slider("Classic threshold Y", 0.0, 1.0, 0.5, 0.01)
-    alpha=st.sidebar.slider("Extended FCM alpha", 0.1, 0.9, 0.5, 0.05)
+        rows.append({
+            "Item": it,
+            "PIS": round(float(best_val), 4),
+            "PIS_Key": str(best_key) if best_key is not None else "",
+            "NIS": round(float(worst_val), 4),
+            "NIS_Key": str(worst_key) if worst_key is not None else ""
+        })
+    return pd.DataFrame(rows, columns=["Item","PIS","PIS_Key","NIS","NIS_Key"])
 
-    st.sidebar.header("Variables para análisis")
-    group_cols=st.sidebar.multiselect("Agrupar TOPSIS por:", all_cols, key="group_cols_widget")
-    ratio_cols=st.sidebar.multiselect("Covariables para Probability Ratios:", all_cols, key="ratio_cols_widget")
 
-    if st.button("Run analysis") and items_x and items_y:
-        idx={}
-        for nm,items in {lname_x:items_x, lname_y:items_y}.items():
-            mat=[]
-            for it in items:
-                m_item=df_to_tfn_matrix(df,[it],tfn_map_by_item[it],levels_by_item[it])
-                if not mat: mat=[[row[0]] for row in m_item]
-                else:
-                    for r,row in enumerate(m_item): mat[r].append(row[0])
-            idx[nm]=fuzzy_topsis_cc(mat,[True]*len(items),[1.0]*len(items))
+# --- NEW: Unified Group TOPSIS table (one table, NOT split) ---
+def unified_group_topsis_table(df: pd.DataFrame,
+                               items_x: List[str], items_y: List[str],
+                               tfn_maps: Dict[str,Dict[int,TFN]],
+                               levels_by_item: Dict[str,List[int]],
+                               group_cols: List[str],
+                               name_x: str, name_y: str) -> pd.DataFrame:
+    def _defuzz_means(dfg, items):
+        row = {}
+        for it in items:
+            levels = levels_by_item[it]; mapping = tfn_maps[it]
+            med = int(np.median(levels)); fallback = mapping[med]
+            tfns = []
+            for v in dfg[it].tolist():
+                try: iv = int(v)
+                except: iv = None
+                if iv not in levels: iv = med
+                tfns.append(mapping.get(iv, fallback))
+            if tfns:
+                a = np.mean([t.a for t in tfns]); b = np.mean([t.b for t in tfns]); c = np.mean([t.c for t in tfns])
+            else:
+                a=b=c=0.0
+            row[it] = defuzz_buckley(TFN(a,b,c))
+        return row
 
-        x=np.array(idx[lname_x]); y=np.array(idx[lname_y])
-        classic = classic_apostle_threshold(x,y,thr_x,thr_y)
-        extended = eco_extended_labels_4x4(x,y,
-                    ["LowX","MedLowX","MedHighX","HighX"],
-                    ["LowY","MedLowY","MedHighY","HighY"])
+    out_rows = []
+    if not group_cols:
+        tx = 0.5; ty = 0.5
+        out_rows.append({"Variable":"ALL","Item":"ALL","Topsis-LatX":tx,"Topsis-LatY":ty})
+        return pd.DataFrame(out_rows, columns=["Variable","Item","Topsis-LatX","Topsis-LatY"])
 
-        res=pd.DataFrame({f"{lname_x}":x, f"{lname_y}":y, "Classic":classic, "Extended4x4":extended})
-        st.session_state['results']=res
-        st.session_state['lname_x']=lname_x; st.session_state['lname_y']=lname_y
-        st.session_state['items_x']=items_x; st.session_state['items_y']=items_y
-        st.session_state['tfn_map_by_item']=tfn_map_by_item; st.session_state['levels_by_item']=levels_by_item
-        st.session_state['group_cols']=group_cols; st.session_state['ratio_cols']=ratio_cols
+    for gcol in group_cols:
+        groups = [g for g,_ in df.groupby(gcol, dropna=True)]
+        Vx = pd.DataFrame([_defuzz_means(df[df[gcol]==g], items_x) for g in groups]) if items_x else pd.DataFrame(index=range(len(groups)))
+        Vy = pd.DataFrame([_defuzz_means(df[df[gcol]==g], items_y) for g in groups]) if items_y else pd.DataFrame(index=range(len(groups)))
 
-    if 'results' in st.session_state:
-        res=st.session_state['results']
-        lname_x=st.session_state['lname_x']; lname_y=st.session_state['lname_y']
-        items_x=st.session_state['items_x']; items_y=st.session_state['items_y']
-        tfn_map_by_item=st.session_state['tfn_map_by_item']; levels_by_item=st.session_state['levels_by_item']
-        group_cols=st.session_state['group_cols']; ratio_cols=st.session_state['ratio_cols']
+        def _topsis_from_matrix(V):
+            if V.empty:
+                return np.array([np.nan]*len(groups))
+            pis = V.max(axis=0); nis = V.min(axis=0)
+            S_plus = np.sqrt(((V - pis)**2).sum(axis=1))
+            S_minus = np.sqrt(((V - nis)**2).sum(axis=1))
+            return (S_minus / (S_plus + S_minus + 1e-12)).clip(0,1).to_numpy()
 
-        st.subheader("📊 Resultados individuales (TOPSIS)")
-        st.dataframe(res)
-        st.download_button("⬇️ Descargar CSV (individual)", data=res.to_csv(index=False).encode("utf-8"), file_name="topsis_individual.csv")
+        tx = _topsis_from_matrix(Vx)
+        ty = _topsis_from_matrix(Vy)
 
-        if group_cols:
-            tabs = st.tabs(["Group TOPSIS", "PIS/NIS global", "Probability ratios"])
+        for i, g in enumerate(groups):
+            out_rows.append({
+                "Variable": gcol,
+                "Item": str(g),
+                "Topsis-LatX": round(float(tx[i]) if not np.isnan(tx[i]) else np.nan, 6) if len(tx) else np.nan,
+                "Topsis-LatY": round(float(ty[i]) if not np.isnan(ty[i]) else np.nan, 6) if len(ty) else np.nan
+            })
 
-            with tabs[0]:
-                for lat_name, items in [(lname_x,items_x),(lname_y,items_y)]:
-                    if not items: continue
-                    st.markdown(f"### {lat_name} — Group TOPSIS")
-                    for gcol in group_cols:
-                        gdf, ideals_df = group_topsis_and_ideals(df, items, tfn_map_by_item, levels_by_item, gcol)
-                        st.markdown(f"**Agrupación:** `{gcol}`")
-                        st.dataframe(gdf)
-                        st.download_button(f"⬇️ CSV Group TOPSIS — {lat_name} / {gcol}", data=gdf.to_csv(index=False).encode("utf-8"),
-                                           file_name=f"group_topsis__{lat_name}__by_{gcol}.csv")
-                        st.session_state[f"ideals__{lat_name}__{gcol}"]=ideals_df
+    return pd.DataFrame(out_rows, columns=["Variable","Item","Topsis-LatX","Topsis-LatY"])
 
-            with tabs[1]:
-                for lat_name, items in [(lname_x,items_x),(lname_y,items_y)]:
-                    if not items: continue
-                    for gcol in group_cols:
-                        ideals_df = st.session_state.get(f"ideals__{lat_name}__{gcol}")
-                        if ideals_df is not None:
-                            st.markdown(f"### {lat_name} — PIS/NIS GLOBAL (agrupación `{gcol}`)")
-                            st.dataframe(ideals_df)
-                            st.download_button(f"⬇️ CSV PIS-NIS GLOBAL — {lat_name} / {gcol}",
-                                               data=ideals_df.to_csv(index=False).encode("utf-8"),
-                                               file_name=f"pis_nis_global__{lat_name}__by_{gcol}.csv")
 
-            with tabs[2]:
-                if ratio_cols:
-                    full=pd.concat([df.reset_index(drop=True), res.reset_index(drop=True)], axis=1)
-                    ratios = conditional_probability_ratios_by_level(full, "Classic", ratio_cols, max_levels=12, n_boot=1000)
-                    st.dataframe(ratios)
-                    st.download_button("⬇️ CSV Probability Ratios", data=ratios.to_csv(index=False).encode("utf-8"),
-                                       file_name="probability_ratios.csv")
-                else:
-                    st.info("Selecciona covariables en la barra lateral para calcular Ratios.")
+# --- UI hooks example (place inside your 'if results' block) ---
+# items_all = items_x + items_y
+# pis_nis_global = global_pis_nis_across_items(df, items_all, tfn_map_by_item, levels_by_item, group_cols)
+# st.subheader("🌐 Global PIS/NIS (single table across ALL items)")
+# st.dataframe(pis_nis_global)
+# st.download_button("⬇️ Download CSV — Global PIS/NIS", data=pis_nis_global.to_csv(index=False).encode("utf-8"),
+#                    file_name="global_pis_nis_all_items.csv")
+#
+# unified_groups = unified_group_topsis_table(df, items_x, items_y, tfn_map_by_item, levels_by_item, group_cols, lname_x, lname_y)
+# st.subheader("🧮 Group TOPSIS (single table)")
+# st.caption("Columns: Variable (grouping variable), Item (group value), Topsis-LatX, Topsis-LatY")
+# st.dataframe(unified_groups)
+# st.download_button("⬇️ Download CSV — Unified Group TOPSIS", data=unified_groups.to_csv(index=False).encode("utf-8"),
+#                    file_name="group_topsis_unified.csv")
