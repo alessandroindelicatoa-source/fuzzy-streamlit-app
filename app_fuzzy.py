@@ -1,28 +1,5 @@
 # app_fuzzy.py
 # -*- coding: utf-8 -*-
-"""
-Fuzzy-Hybrid TOPSIS + Fuzzy C-Means + Eco-Apostle + Probability Ratios
-
-Methodological reference:
-Indelicato, A. & Martín, J.C. (2022).
-Two Approaches to Analyze Whether Citizens' National Identity Is Affected by
-Country, Age, and Political Orientation—A Fuzzy Eco-Apostle Model.
-Applied Sciences, 12(8), 3946. https://doi.org/10.3390/app12083946
-
-Main design choices:
-- Input ordinal scales must run from 1 = lower level to K = higher level.
-- Fuzzy-Hybrid TOPSIS follows the paper's logic:
-    ordinal response -> TFN -> Buckley defuzzification -> PIS/NIS
-    -> Euclidean distances -> closeness coefficient.
-- Item weights are RAW importance coefficients and are NOT normalized to sum to 1.
-  With equal weighting every item has weight 1.0, regardless of how many items
-  form a latent variable.
-- Fuzzy C-Means is performed on the fuzzy item vectors (TFNs), separately for
-  each latent variable, using the fuzzy distance described in the .
-- The extended 4x4 Eco-Apostle classification is based on FCM memberships,
-  not on arbitrary TOPSIS cut-points.
-- All 4 classic quadrant names and all 16 extended quadrant names are editable.
-"""
 
 import math
 from dataclasses import dataclass
@@ -90,11 +67,9 @@ class TFN:
 
 
 def defuzz_buckley(x: TFN) -> float:
-    """Buckley-type defuzzification used in the reference paper."""
     return (x.a + 2.0 * x.b + x.c) / 4.0
 
 
-# Exact 1–4 mapping reported in Indelicato & Martín (2022)
 def likert_map_1_4() -> Dict[int, TFN]:
     return {
         1: TFN(0, 0, 50),
@@ -104,7 +79,6 @@ def likert_map_1_4() -> Dict[int, TFN]:
     }
 
 
-# Additional monotonic maps kept for datasets with other ordinal scales.
 def likert_map_1_5() -> Dict[int, TFN]:
     return {
         1: TFN(0, 0, 25),
@@ -127,10 +101,6 @@ def likert_map_1_6() -> Dict[int, TFN]:
 
 
 def linear_tfn_map(levels: List[int]) -> Dict[int, TFN]:
-    """
-    Generic monotonic TFN partition on [0,100].
-    Useful for 1–7, 1–10, 1–11 or custom integer scales.
-    """
     levels = sorted(set(int(x) for x in levels))
     if len(levels) < 2:
         raise ValueError("At least two scale levels are required.")
@@ -167,7 +137,7 @@ def likert_map_1_11():
 
 
 # ============================================================
-# 2) Data validation and TFN conversion
+# 2) Validation and TFN conversion
 # ============================================================
 
 def validate_items(
@@ -175,10 +145,6 @@ def validate_items(
     items: List[str],
     levels_by_item: Dict[str, List[int]],
 ) -> Tuple[bool, List[str]]:
-    """
-    Strict validation: missing or invalid latent-item values are not silently
-    replaced by the median. The user should upload an imputed/complete file.
-    """
     problems = []
 
     for it in items:
@@ -197,7 +163,9 @@ def validate_items(
             problems.append(f"{it}: {n_missing} missing/non-numeric value(s).")
         if n_invalid:
             bad = sorted(s[invalid_mask].unique().tolist())
-            problems.append(f"{it}: {n_invalid} value(s) outside {sorted(levels)}: {bad[:10]}")
+            problems.append(
+                f"{it}: {n_invalid} value(s) outside {sorted(levels)}: {bad[:10]}"
+            )
 
     return len(problems) == 0, problems
 
@@ -207,7 +175,6 @@ def df_to_tfn_array(
     items: List[str],
     tfn_maps: Dict[str, Dict[int, TFN]],
 ) -> np.ndarray:
-    """Return N × K × 3 TFN array."""
     n = len(df)
     k = len(items)
     X = np.zeros((n, k, 3), dtype=float)
@@ -224,49 +191,39 @@ def df_to_tfn_array(
 
 
 def defuzz_tfn_array(X: np.ndarray) -> np.ndarray:
-    """N × K × 3 -> N × K crisp values."""
     return (X[:, :, 0] + 2.0 * X[:, :, 1] + X[:, :, 2]) / 4.0
 
 
 # ============================================================
-# 3) Fuzzy-Hybrid TOPSIS — reference-paper formulation
+# 3) Fuzzy-Hybrid TOPSIS
 # ============================================================
 
 def fuzzy_hybrid_topsis(
     X_tfn: np.ndarray,
     is_benefit: List[bool] = None,
-    item_weights: List[float] = None,
 ):
     """
-    Reference-paper logic:
-      1) TFNs are defuzzified: V_ij = (a1 + 2*a2 + a3)/4.
-      2) Positive/negative ideal solutions are obtained item by item.
-      3) Euclidean distances to PIS/NIS are calculated.
-      4) TOPSIS = D- / (D+ + D-).
+    Equal contribution of all items.
 
-    IMPORTANT:
-    item_weights are RAW importance coefficients.
-    They are deliberately NOT normalized to sum to 1.
+    For each item:
+      PIS = maximum defuzzified value observed among all firms
+      NIS = minimum defuzzified value observed among all firms
 
-    Default: every item has weight 1.0.
-    Thus, if a latent has 2 items, the weights are [1,1], not [0.5,0.5].
+    Then:
+      D+ = sqrt(sum_j (Vij - PISj)^2)
+      D- = sqrt(sum_j (Vij - NISj)^2)
+      TOPSIS = D- / (D+ + D-)
+
+    No weight normalization is applied.
     """
     V = defuzz_tfn_array(X_tfn)
     n, k = V.shape
 
     if is_benefit is None:
         is_benefit = [True] * k
+
     if len(is_benefit) != k:
         raise ValueError("is_benefit must have one value per item.")
-
-    if item_weights is None:
-        w = np.ones(k, dtype=float)
-    else:
-        w = np.asarray(item_weights, dtype=float)
-        if len(w) != k:
-            raise ValueError("item_weights must have one value per item.")
-        if np.any(w <= 0):
-            raise ValueError("All item weights must be > 0.")
 
     pis = np.zeros(k, dtype=float)
     nis = np.zeros(k, dtype=float)
@@ -279,9 +236,8 @@ def fuzzy_hybrid_topsis(
             pis[j] = np.min(V[:, j])
             nis[j] = np.max(V[:, j])
 
-    # Raw item weights enter the squared-distance aggregation directly.
-    d_plus = np.sqrt(np.sum(w[None, :] * (V - pis[None, :]) ** 2, axis=1))
-    d_minus = np.sqrt(np.sum(w[None, :] * (V - nis[None, :]) ** 2, axis=1))
+    d_plus = np.sqrt(np.sum((V - pis[None, :]) ** 2, axis=1))
+    d_minus = np.sqrt(np.sum((V - nis[None, :]) ** 2, axis=1))
 
     cc = d_minus / (d_plus + d_minus + 1e-15)
 
@@ -292,28 +248,57 @@ def fuzzy_hybrid_topsis(
         "nis": nis,
         "d_plus": d_plus,
         "d_minus": d_minus,
-        "weights": w,
     }
 
 
+def individual_pis_nis_audit(
+    df: pd.DataFrame,
+    items: List[str],
+    tfn_maps: Dict[str, Dict[int, TFN]],
+    latent_name: str,
+) -> pd.DataFrame:
+    """
+    Transparent audit table showing why each PIS/NIS has its value.
+    """
+    rows = []
+
+    for it in items:
+        s = pd.to_numeric(df[it], errors="raise").astype(int)
+        min_response = int(s.min())
+        max_response = int(s.max())
+        n_min = int((s == min_response).sum())
+        n_max = int((s == max_response).sum())
+
+        min_tfn = tfn_maps[it][min_response]
+        max_tfn = tfn_maps[it][max_response]
+
+        rows.append({
+            "Latent": latent_name,
+            "Item": it,
+            "Minimum observed response": min_response,
+            "N at minimum": n_min,
+            "NIS": defuzz_buckley(min_tfn),
+            "Maximum observed response": max_response,
+            "N at maximum": n_max,
+            "PIS": defuzz_buckley(max_tfn),
+        })
+
+    return pd.DataFrame(rows)
+
+
 # ============================================================
-# 4) Group TOPSIS and global PIS/NIS
+# 4) Group TOPSIS and group PIS/NIS
 # ============================================================
 
-def group_topsis_one_latent(
+def group_defuzz_matrix(
     df: pd.DataFrame,
     items: List[str],
     tfn_maps: Dict[str, Dict[int, TFN]],
     group_col: str,
-    item_weights: List[float],
-) -> pd.DataFrame:
-    """
-    Aggregate each group to item-level mean defuzzified values, then compute
-    TOPSIS across groups. Raw item weights are not normalized.
-    """
+):
     groups = list(df.groupby(group_col, dropna=True))
     if not groups:
-        return pd.DataFrame(columns=["Variable", "Item", "TOPSIS"])
+        return [], np.empty((0, len(items)))
 
     group_names = []
     M = []
@@ -324,14 +309,25 @@ def group_topsis_one_latent(
         M.append(V.mean(axis=0))
         group_names.append(g)
 
-    M = np.asarray(M, dtype=float)
-    k = M.shape[1]
-    w = np.asarray(item_weights if item_weights is not None else np.ones(k), dtype=float)
+    return group_names, np.asarray(M, dtype=float)
+
+
+def group_topsis_one_latent(
+    df: pd.DataFrame,
+    items: List[str],
+    tfn_maps: Dict[str, Dict[int, TFN]],
+    group_col: str,
+) -> pd.DataFrame:
+    group_names, M = group_defuzz_matrix(df, items, tfn_maps, group_col)
+
+    if len(group_names) == 0:
+        return pd.DataFrame(columns=["Variable", "Item", "TOPSIS"])
 
     pis = M.max(axis=0)
     nis = M.min(axis=0)
-    d_plus = np.sqrt(np.sum(w[None, :] * (M - pis[None, :]) ** 2, axis=1))
-    d_minus = np.sqrt(np.sum(w[None, :] * (M - nis[None, :]) ** 2, axis=1))
+
+    d_plus = np.sqrt(np.sum((M - pis[None, :]) ** 2, axis=1))
+    d_minus = np.sqrt(np.sum((M - nis[None, :]) ** 2, axis=1))
     cc = d_minus / (d_plus + d_minus + 1e-15)
 
     return pd.DataFrame({
@@ -349,21 +345,18 @@ def unified_group_topsis_table(
     group_cols: List[str],
     name_x: str,
     name_y: str,
-    weights_x: List[float],
-    weights_y: List[float],
 ) -> pd.DataFrame:
-
     rows = []
 
     for gcol in group_cols:
-        tx = group_topsis_one_latent(df, items_x, tfn_maps, gcol, weights_x)
-        ty = group_topsis_one_latent(df, items_y, tfn_maps, gcol, weights_y)
+        tx = group_topsis_one_latent(df, items_x, tfn_maps, gcol)
+        ty = group_topsis_one_latent(df, items_y, tfn_maps, gcol)
 
         merged = tx.merge(
             ty,
             on=["Variable", "Item"],
             how="outer",
-            suffixes=(f"_{name_x}", f"_{name_y}")
+            suffixes=(f"_{name_x}", f"_{name_y}"),
         )
 
         for _, r in merged.iterrows():
@@ -377,40 +370,45 @@ def unified_group_topsis_table(
     return pd.DataFrame(rows)
 
 
-def global_pis_nis_table(
-    result_x: dict,
-    result_y: dict,
-    items_x: List[str],
-    items_y: List[str],
-    name_x: str,
-    name_y: str,
+def group_pis_nis_table(
+    df: pd.DataFrame,
+    items: List[str],
+    tfn_maps: Dict[str, Dict[int, TFN]],
+    group_cols: List[str],
+    latent_name: str,
 ) -> pd.DataFrame:
-
+    """
+    For each grouping variable and each latent item:
+      group PIS = largest group mean
+      group NIS = smallest group mean
+    """
     rows = []
 
-    for j, it in enumerate(items_x):
-        rows.append({
-            "Latent": name_x,
-            "Item": it,
-            "PIS": round(float(result_x["pis"][j]), 4),
-            "NIS": round(float(result_x["nis"][j]), 4),
-            "RawWeight": round(float(result_x["weights"][j]), 4),
-        })
+    for gcol in group_cols:
+        group_names, M = group_defuzz_matrix(df, items, tfn_maps, gcol)
+        if len(group_names) == 0:
+            continue
 
-    for j, it in enumerate(items_y):
-        rows.append({
-            "Latent": name_y,
-            "Item": it,
-            "PIS": round(float(result_y["pis"][j]), 4),
-            "NIS": round(float(result_y["nis"][j]), 4),
-            "RawWeight": round(float(result_y["weights"][j]), 4),
-        })
+        for j, it in enumerate(items):
+            col = M[:, j]
+            i_pis = int(np.argmax(col))
+            i_nis = int(np.argmin(col))
+
+            rows.append({
+                "Latent": latent_name,
+                "Grouping variable": gcol,
+                "Item": it,
+                "Group PIS": float(col[i_pis]),
+                "PIS group": str(group_names[i_pis]),
+                "Group NIS": float(col[i_nis]),
+                "NIS group": str(group_names[i_nis]),
+            })
 
     return pd.DataFrame(rows)
 
 
 # ============================================================
-# 5) Fuzzy C-Means for fuzzy data
+# 5) Fuzzy C-Means on TFN item vectors
 # ============================================================
 
 def fuzzy_distance_squared(
@@ -419,20 +417,8 @@ def fuzzy_distance_squared(
     w1_extremes: float = 0.7,
     w2_centers: float = 0.3,
 ) -> np.ndarray:
-    """
-    Squared fuzzy distance from the reference paper.
-
-    X:       N × K × 3
-    centers: C × K × 3
-
-    d_F^2 =
-        w2^2 * ||a2_i - p2_c||^2
-        + w1^2 * (||a1_i - p1_c||^2 + ||a3_i - p3_c||^2)
-
-    with w1 >= w2 >= 0 and w1 + w2 = 1.
-    """
     if w1_extremes < w2_centers:
-        raise ValueError("The paper requires w1 (extremes) >= w2 (centres).")
+        raise ValueError("w1 must be greater than or equal to w2.")
     if abs((w1_extremes + w2_centers) - 1.0) > 1e-8:
         raise ValueError("w1 + w2 must equal 1.")
 
@@ -442,19 +428,14 @@ def fuzzy_distance_squared(
 
     d2 = (
         (w2_centers ** 2) * np.sum(mid ** 2, axis=2)
-        + (w1_extremes ** 2) * (
-            np.sum(left ** 2, axis=2) + np.sum(right ** 2, axis=2)
-        )
+        + (w1_extremes ** 2)
+        * (np.sum(left ** 2, axis=2) + np.sum(right ** 2, axis=2))
     )
 
     return np.maximum(d2, 0.0)
 
 
 def _update_memberships_from_distances(dist: np.ndarray, m: float) -> np.ndarray:
-    """
-    Standard FCM membership update from N × C distances.
-    Handles exact-zero distances deterministically.
-    """
     n, c = dist.shape
     U = np.zeros((n, c), dtype=float)
     power = 2.0 / (m - 1.0)
@@ -483,11 +464,6 @@ def fuzzy_cmeans_fuzzy_data(
     tol: float = 1e-7,
     seed: int = 42,
 ):
-    """
-    Fuzzy C-Means directly on the TFN item vectors.
-
-    Returns memberships, fuzzy centroids and diagnostics.
-    """
     if m <= 1:
         raise ValueError("FCM fuzzifier m must be > 1.")
     if n_clusters < 2:
@@ -524,7 +500,6 @@ def fuzzy_cmeans_fuzzy_data(
         if np.max(np.abs(U - U_old)) < tol:
             break
 
-    # Final centres/distances after convergence
     Um = U ** m
     denom = Um.sum(axis=0)[:, None, None] + 1e-15
     centers = np.einsum("nc,nkd->ckd", Um, X) / denom
@@ -536,7 +511,6 @@ def fuzzy_cmeans_fuzzy_data(
         w2_centers=w2_centers,
     )
 
-    # Fuzzy Partition Coefficient and Partition Entropy
     fpc = float(np.sum(U ** 2) / n)
     pe = float(-np.sum(U * np.log(U + 1e-15)) / n)
 
@@ -552,46 +526,35 @@ def fuzzy_cmeans_fuzzy_data(
 
 
 def order_fcm_low_intermediate_high(fcm_result: dict):
-    """
-    Order the 3 fuzzy clusters by mean defuzzified centroid:
-    Low -> Intermediate -> High.
-    """
     centers = fcm_result["centers"]
+
     if centers.shape[0] != 3:
-        raise ValueError("Extended Eco-Apostle currently requires exactly 3 clusters.")
+        raise ValueError("The extended 4×4 classification requires exactly 3 clusters.")
 
     center_crisp = (
         centers[:, :, 0] + 2.0 * centers[:, :, 1] + centers[:, :, 2]
     ) / 4.0
+
     profile_score = center_crisp.mean(axis=1)
-
     order = np.argsort(profile_score)
-    low_idx, mid_idx, high_idx = order.tolist()
 
-    U_ord = fcm_result["U"][:, [low_idx, mid_idx, high_idx]]
-    centers_ord = centers[[low_idx, mid_idx, high_idx], :, :]
+    low_idx, mid_idx, high_idx = order.tolist()
 
     return {
         **fcm_result,
-        "U_ordered": U_ord,
-        "centers_ordered": centers_ord,
+        "U_ordered": fcm_result["U"][:, [low_idx, mid_idx, high_idx]],
+        "centers_ordered": centers[[low_idx, mid_idx, high_idx], :, :],
         "profile_scores_ordered": profile_score[[low_idx, mid_idx, high_idx]],
-        "original_cluster_order": [low_idx, mid_idx, high_idx],
     }
 
 
-def eco_axis_code_from_memberships(U_low_mid_high: np.ndarray, alpha: float = 0.5):
+def eco_axis_level(U_low_mid_high: np.ndarray, alpha: float = 0.5):
     """
-    Paper-consistent 4-level axis classification.
-
-    With ordered memberships [Low, Intermediate, High]:
-      1 if Low membership > alpha
-      3 if Intermediate membership > alpha
-      4 if High membership > alpha
-      2 otherwise
-
-    For alpha=0.5 this reproduces the logic of Equation (6), after cluster
-    prototypes are ordered by latent intensity.
+    Internal 4-level classification:
+      1 = Low
+      2 = Hybrid / transition
+      3 = Intermediate
+      4 = High
     """
     out = np.full(U_low_mid_high.shape[0], 2, dtype=int)
 
@@ -611,7 +574,6 @@ def fcm_centers_table(
     items: List[str],
     latent_name: str,
 ) -> pd.DataFrame:
-
     centers = fcm_ordered["centers_ordered"]
     profile_names = ["Low", "Intermediate", "High"]
     rows = []
@@ -643,8 +605,8 @@ def classic_quadrant_labels(
     thr_y: float,
     labels: Dict[str, str],
 ) -> List[str]:
-
     out = []
+
     for xi, yi in zip(x, y):
         if xi >= thr_x and yi >= thr_y:
             out.append(labels["HH"])
@@ -654,19 +616,23 @@ def classic_quadrant_labels(
             out.append(labels["LH"])
         else:
             out.append(labels["LL"])
+
     return out
 
 
 def extended_16_labels(
-    code_x: np.ndarray,
-    code_y: np.ndarray,
+    level_x: np.ndarray,
+    level_y: np.ndarray,
     labels_16: Dict[Tuple[int, int], str],
 ) -> List[str]:
-    return [labels_16[(int(a), int(b))] for a, b in zip(code_x, code_y)]
+    return [
+        labels_16[(int(a), int(b))]
+        for a, b in zip(level_x, level_y)
+    ]
 
 
 # ============================================================
-# 7) Conditional Probability Ratios + Bootstrap CI
+# 7) Probability Ratios with bootstrap confidence intervals
 # ============================================================
 
 def _prob_ratio_bootstrap(
@@ -708,15 +674,13 @@ def probability_ratios_for_target(
     max_levels: int = 20,
     n_boot: int = 1000,
 ) -> pd.DataFrame:
-
     rows = []
 
     for cov in covar_cols:
         series = df[cov]
         unique = list(series.dropna().unique())
-
-        # Keep original values; sort on string representation for mixed types.
         unique_sorted = sorted(unique, key=lambda x: str(x))
+
         levels = [(str(v), v) for v in unique_sorted[:max_levels]]
 
         if len(unique_sorted) > max_levels:
@@ -724,10 +688,10 @@ def probability_ratios_for_target(
 
         targets = list(df[target_col].dropna().unique())
 
-        for q in targets:
-            A = (df[target_col] == q).astype(int).to_numpy()
+        for target in targets:
+            A = (df[target_col] == target).astype(int).to_numpy()
 
-            for name, val in levels:
+            for group_name, val in levels:
                 if val is None:
                     explicit_vals = [v for _, v in levels[:-1]]
                     B = (~series.isin(explicit_vals)).astype(int).to_numpy()
@@ -743,15 +707,18 @@ def probability_ratios_for_target(
 
                 rows.append({
                     "Covariate": cov,
-                    "Group": name,
-                    "Target": str(q),
+                    "Group": group_name,
+                    "Target": str(target),
                     "Ratio": round(mean, 4) if np.isfinite(mean) else np.nan,
                     "CI_low": round(lo, 4) if np.isfinite(lo) else np.nan,
                     "CI_high": round(hi, 4) if np.isfinite(hi) else np.nan,
                     "Association": (
-                        "Positive" if np.isfinite(mean) and mean > 1
-                        else "Negative" if np.isfinite(mean) and mean < 1
-                        else "Independent/≈1" if np.isfinite(mean)
+                        "Positive"
+                        if np.isfinite(mean) and mean > 1
+                        else "Negative"
+                        if np.isfinite(mean) and mean < 1
+                        else "Independent/≈1"
+                        if np.isfinite(mean)
                         else ""
                     ),
                 })
@@ -760,7 +727,7 @@ def probability_ratios_for_target(
 
 
 # ============================================================
-# 8) Streamlit helpers
+# 8) Streamlit UI helpers
 # ============================================================
 
 def build_scale_ui_for_items(items: List[str]):
@@ -771,7 +738,7 @@ def build_scale_ui_for_items(items: List[str]):
         sc_choice = st.sidebar.selectbox(
             f"Scale for {it}",
             [
-                "Likert1-4 (paper)",
+                "Likert1-4",
                 "Likert1-5",
                 "Likert1-6",
                 "Likert1-7",
@@ -783,7 +750,7 @@ def build_scale_ui_for_items(items: List[str]):
             key=f"sc_{it}",
         )
 
-        if sc_choice == "Likert1-4 (paper)":
+        if sc_choice == "Likert1-4":
             mapping = likert_map_1_4()
 
         elif sc_choice == "Likert1-5":
@@ -810,7 +777,7 @@ def build_scale_ui_for_items(items: List[str]):
             levels = [int(x.strip()) for x in txt.split(",") if x.strip()]
             mapping = linear_tfn_map(levels)
 
-        else:  # Manual TFN
+        else:
             txt = st.sidebar.text_input(
                 f"Levels for {it}",
                 value="1,2,3,4",
@@ -834,35 +801,6 @@ def build_scale_ui_for_items(items: List[str]):
     return tfn_maps, levels_by_item
 
 
-def raw_weights_ui(items: List[str], latent_key: str):
-    """
-    Default equal weighting = every item receives weight 1.
-    Weights are NOT normalized.
-    """
-    use_custom = st.sidebar.checkbox(
-        f"Custom item weights for {latent_key}",
-        value=False,
-        key=f"custom_weights_{latent_key}",
-        help="Weights are raw coefficients. They do NOT need to sum to 1.",
-    )
-
-    if not use_custom:
-        return [1.0] * len(items)
-
-    weights = []
-    for it in items:
-        w = st.sidebar.number_input(
-            f"Weight — {it}",
-            min_value=0.0001,
-            value=1.0,
-            step=0.1,
-            key=f"weight_{latent_key}_{it}",
-        )
-        weights.append(float(w))
-
-    return weights
-
-
 def extended_labels_ui(name_x: str, name_y: str):
     axis_names = {
         1: "Low",
@@ -873,18 +811,16 @@ def extended_labels_ui(name_x: str, name_y: str):
 
     labels = {}
 
-    st.sidebar.caption(
-        "Each extended class is identified by the pair "
-        f"({name_x} code, {name_y} code)."
-    )
-
-    for xcode in range(1, 5):
-        for ycode in range(1, 5):
-            default = f"{axis_names[xcode]} {name_x} | {axis_names[ycode]} {name_y}"
-            labels[(xcode, ycode)] = st.sidebar.text_input(
-                f"({xcode},{ycode})",
+    for xlevel in range(1, 5):
+        for ylevel in range(1, 5):
+            default = (
+                f"{axis_names[xlevel]} {name_x} | "
+                f"{axis_names[ylevel]} {name_y}"
+            )
+            labels[(xlevel, ylevel)] = st.sidebar.text_input(
+                f"{axis_names[xlevel]} X · {axis_names[ylevel]} Y",
                 value=default,
-                key=f"ext_label_{xcode}_{ycode}",
+                key=f"ext_label_{xlevel}_{ylevel}",
             )
 
     return labels
@@ -904,31 +840,28 @@ gate()
 
 st.title("Fuzzy-Hybrid TOPSIS · Fuzzy C-Means · Eco-Apostle")
 st.caption(
-    "Higher input category = higher latent level. "
-    "Fuzzy-Hybrid TOPSIS follows the Indelicato & Martín (2022) formulation."
+    "Input scales must run from 1 = lower level to K = higher level."
 )
 
 with st.expander("Method used in this app", expanded=False):
     st.markdown(
         """
         **Fuzzy-Hybrid TOPSIS**
-        1. Convert ordinal semantic responses into triangular fuzzy numbers (TFNs).
-        2. Defuzzify each TFN using `(a + 2b + c) / 4`.
-        3. Obtain positive and negative ideal solutions item by item.
-        4. Calculate Euclidean distances.
+        1. Convert ordinal responses into triangular fuzzy numbers.
+        2. Defuzzify each triangular fuzzy number using `(a + 2b + c) / 4`.
+        3. For each item, identify the largest observed value as PIS and the smallest observed value as NIS.
+        4. Calculate Euclidean distance to PIS and NIS across all items of the latent dimension.
         5. Calculate `TOPSIS = D- / (D+ + D-)`.
 
-        **Important:** equal item weights are `1, 1, ..., 1`.
-        The program does **not** force item weights within a latent variable to sum to 1.
+        Every selected item contributes equally. There is no normalization of item weights.
 
-        **Fuzzy clustering**
+        **Fuzzy C-Means**
         - Three fuzzy clusters are estimated separately for each latent variable.
-        - The clustering is performed directly on the TFN item vectors.
+        - Clustering uses the triangular fuzzy item vectors.
         - Profiles are ordered as Low, Intermediate and High.
-        - The extended 4×4 classification uses the fuzzy membership degrees.
 
         **Probability ratios**
-        - `R_AB = P(A∩B) / [P(A)P(B)]`
+        - `R = P(A∩B) / [P(A)P(B)]`
         - Bootstrap 95% confidence intervals are calculated.
         """
     )
@@ -947,7 +880,6 @@ try:
     if up.name.lower().endswith(".csv"):
         df = pd.read_csv(up)
     else:
-        # Reads the first sheet. Put the analysis dataset as the first Excel sheet.
         df = pd.read_excel(up)
 except Exception as e:
     st.error(f"Could not read the uploaded file: {e}")
@@ -971,17 +903,18 @@ items_x = st.sidebar.multiselect("Items for X", all_cols, key="items_x_widget")
 lname_y = st.sidebar.text_input("Latent Y name", value="Latent Y")
 items_y = st.sidebar.multiselect("Items for Y", all_cols, key="items_y_widget")
 
-if set(items_x) & set(items_y):
+overlap = sorted(set(items_x) & set(items_y))
+if overlap:
     st.sidebar.warning(
         "Some items are included in both latent variables: "
-        + ", ".join(sorted(set(items_x) & set(items_y)))
+        + ", ".join(overlap)
     )
+
+selected_unique = list(dict.fromkeys(items_x + items_y))
 
 # --------------------------
 # Scales
 # --------------------------
-
-selected_unique = list(dict.fromkeys(items_x + items_y))
 
 st.sidebar.header("2 · TFN scale per item")
 
@@ -991,60 +924,10 @@ else:
     tfn_map_by_item, levels_by_item = {}, {}
 
 # --------------------------
-# Raw weights — no normalization
+# Classic quadrants
 # --------------------------
 
-st.sidebar.header("3 · Item weights")
-st.sidebar.caption(
-    "Default = 1.0 for every item. "
-)
-
-weights_x = raw_weights_ui(items_x, "X") if items_x else []
-weights_y = raw_weights_ui(items_y, "Y") if items_y else []
-
-if items_x:
-    st.sidebar.write(f"Σ raw weights X = **{sum(weights_x):.3f}**")
-if items_y:
-    st.sidebar.write(f"Σ raw weights Y = **{sum(weights_y):.3f}**")
-
-# --------------------------
-# Fuzzy clustering parameters
-# --------------------------
-
-st.sidebar.header("4 · Fuzzy C-Means")
-
-m_fuzzy = st.sidebar.slider(
-    "Fuzzifier m",
-    min_value=1.1,
-    max_value=3.0,
-    value=2.0,
-    step=0.1,
-)
-
-w1_extremes = st.sidebar.slider(
-    "w1 — TFN extremes",
-    min_value=0.50,
-    max_value=1.00,
-    value=0.70,
-    step=0.05,
-    help="The reference formulation requires w1 ≥ w2 and w1 + w2 = 1.",
-)
-w2_centers = 1.0 - w1_extremes
-st.sidebar.write(f"w2 — TFN centres = **{w2_centers:.2f}**")
-
-alpha = st.sidebar.slider(
-    "Extended Eco-Apostle α",
-    min_value=0.30,
-    max_value=0.80,
-    value=0.50,
-    step=0.05,
-)
-
-# --------------------------
-# Classic quadrant settings
-# --------------------------
-
-st.sidebar.header("5 · Classic 4 quadrants")
+st.sidebar.header("3 · Classic 4 quadrants")
 
 thr_x = st.sidebar.slider(
     f"{lname_x} threshold",
@@ -1053,6 +936,7 @@ thr_x = st.sidebar.slider(
     value=0.5,
     step=0.01,
 )
+
 thr_y = st.sidebar.slider(
     f"{lname_y} threshold",
     min_value=0.0,
@@ -1085,22 +969,56 @@ q4_labels = {
 }
 
 # --------------------------
-# Extended 16 quadrant names
+# Extended 16 names
 # --------------------------
 
-st.sidebar.header("6 · Extended 16 quadrants")
+st.sidebar.header("4 · Extended 16 quadrants")
 
 with st.sidebar.expander("Name all 16 extended classes", expanded=False):
     ext_labels = extended_labels_ui(lname_x, lname_y)
 
 # --------------------------
-# Group variables and ratios
+# Fuzzy C-Means advanced settings
 # --------------------------
 
-st.sidebar.header("7 · Analysis variables")
+st.sidebar.header("5 · Fuzzy C-Means")
+
+with st.sidebar.expander("Advanced clustering settings", expanded=False):
+    m_fuzzy = st.slider(
+        "Fuzzifier m",
+        min_value=1.1,
+        max_value=3.0,
+        value=2.0,
+        step=0.1,
+    )
+
+    w1_extremes = st.slider(
+        "w1 — TFN extremes",
+        min_value=0.50,
+        max_value=1.00,
+        value=0.70,
+        step=0.05,
+    )
+
+    w2_centers = 1.0 - w1_extremes
+    st.write(f"w2 — TFN centres = **{w2_centers:.2f}**")
+
+    alpha = st.slider(
+        "Extended Eco-Apostle α",
+        min_value=0.30,
+        max_value=0.80,
+        value=0.50,
+        step=0.05,
+    )
+
+# --------------------------
+# Grouping and probability ratios
+# --------------------------
+
+st.sidebar.header("6 · Analysis variables")
 
 group_cols = st.sidebar.multiselect(
-    "Group TOPSIS by",
+    "Group TOPSIS and group PIS/NIS by",
     all_cols,
     key="group_cols_widget",
 )
@@ -1139,36 +1057,53 @@ if run:
     if not valid:
         st.error(
             "Latent-item validation failed. "
-            "This version does not silently replace missing/invalid values."
+            "Missing or invalid values must be corrected before the analysis."
         )
+
         for p in problems:
             st.write(f"- {p}")
+
         st.stop()
 
-    # Build fuzzy matrices
+    # Fuzzy matrices
     X_tfn = df_to_tfn_array(df, items_x, tfn_map_by_item)
     Y_tfn = df_to_tfn_array(df, items_y, tfn_map_by_item)
 
-    # --------------------------------------------------------
-    # Fuzzy-Hybrid TOPSIS
-    # --------------------------------------------------------
+    # TOPSIS
     topsis_x = fuzzy_hybrid_topsis(
         X_tfn,
         is_benefit=[True] * len(items_x),
-        item_weights=weights_x,
     )
+
     topsis_y = fuzzy_hybrid_topsis(
         Y_tfn,
         is_benefit=[True] * len(items_y),
-        item_weights=weights_y,
     )
 
     x = topsis_x["cc"]
     y = topsis_y["cc"]
 
-    # --------------------------------------------------------
-    # Fuzzy C-Means on fuzzy item vectors
-    # --------------------------------------------------------
+    # Individual PIS/NIS audit
+    audit_x = individual_pis_nis_audit(
+        df,
+        items_x,
+        tfn_map_by_item,
+        lname_x,
+    )
+
+    audit_y = individual_pis_nis_audit(
+        df,
+        items_y,
+        tfn_map_by_item,
+        lname_y,
+    )
+
+    pis_nis_audit = pd.concat(
+        [audit_x, audit_y],
+        ignore_index=True,
+    )
+
+    # Fuzzy C-Means
     fcm_x = fuzzy_cmeans_fuzzy_data(
         X_tfn,
         n_clusters=3,
@@ -1177,6 +1112,7 @@ if run:
         w2_centers=w2_centers,
         seed=42,
     )
+
     fcm_y = fuzzy_cmeans_fuzzy_data(
         Y_tfn,
         n_clusters=3,
@@ -1192,35 +1128,34 @@ if run:
     Ux = fcm_x["U_ordered"]
     Uy = fcm_y["U_ordered"]
 
-    x_code = eco_axis_code_from_memberships(Ux, alpha=alpha)
-    y_code = eco_axis_code_from_memberships(Uy, alpha=alpha)
+    level_x = eco_axis_level(Ux, alpha=alpha)
+    level_y = eco_axis_level(Uy, alpha=alpha)
 
-    # --------------------------------------------------------
-    # Classifications
-    # --------------------------------------------------------
+    # Named classifications
     classic = classic_quadrant_labels(
-        x, y,
+        x,
+        y,
         thr_x=thr_x,
         thr_y=thr_y,
         labels=q4_labels,
     )
 
     extended = extended_16_labels(
-        x_code,
-        y_code,
+        level_x,
+        level_y,
         labels_16=ext_labels,
     )
 
-    dominant_x = np.array(["Low", "Intermediate", "High"])[np.argmax(Ux, axis=1)]
-    dominant_y = np.array(["Low", "Intermediate", "High"])[np.argmax(Uy, axis=1)]
+    profile_names = np.array(["Low", "Intermediate", "High"])
+
+    dominant_x = profile_names[np.argmax(Ux, axis=1)]
+    dominant_y = profile_names[np.argmax(Uy, axis=1)]
 
     res = pd.DataFrame({
         lname_x: x,
         lname_y: y,
         "ClassicQuadrant": classic,
         "Extended4x4": extended,
-        f"{lname_x}_EcoCode": x_code,
-        f"{lname_y}_EcoCode": y_code,
         f"{lname_x}_FCM_Dominant": dominant_x,
         f"{lname_y}_FCM_Dominant": dominant_y,
         f"{lname_x}_FCM_Low": Ux[:, 0],
@@ -1231,29 +1166,63 @@ if run:
         f"{lname_y}_FCM_High": Uy[:, 2],
     })
 
-    # Keep original row identity/covariates alongside results
     full = pd.concat(
         [df.reset_index(drop=True), res.reset_index(drop=True)],
         axis=1,
     )
 
-    # Persist
+    # Group outputs
+    if group_cols:
+        group_topsis = unified_group_topsis_table(
+            df,
+            items_x,
+            items_y,
+            tfn_map_by_item,
+            group_cols,
+            lname_x,
+            lname_y,
+        )
+
+        gp_x = group_pis_nis_table(
+            df,
+            items_x,
+            tfn_map_by_item,
+            group_cols,
+            lname_x,
+        )
+
+        gp_y = group_pis_nis_table(
+            df,
+            items_y,
+            tfn_map_by_item,
+            group_cols,
+            lname_y,
+        )
+
+        group_pis_nis = pd.concat(
+            [gp_x, gp_y],
+            ignore_index=True,
+        )
+    else:
+        group_topsis = pd.DataFrame()
+        group_pis_nis = pd.DataFrame()
+
+    # Save
     st.session_state["analysis_done"] = True
+    st.session_state["df_input"] = df
     st.session_state["full_results"] = full
     st.session_state["res"] = res
-    st.session_state["topsis_x"] = topsis_x
-    st.session_state["topsis_y"] = topsis_y
+    st.session_state["pis_nis_audit"] = pis_nis_audit
+    st.session_state["group_topsis"] = group_topsis
+    st.session_state["group_pis_nis"] = group_pis_nis
     st.session_state["fcm_x"] = fcm_x
     st.session_state["fcm_y"] = fcm_y
     st.session_state["items_x"] = items_x
     st.session_state["items_y"] = items_y
     st.session_state["lname_x"] = lname_x
     st.session_state["lname_y"] = lname_y
-    st.session_state["tfn_map_by_item"] = tfn_map_by_item
     st.session_state["group_cols"] = group_cols
     st.session_state["ratio_cols"] = ratio_cols
-    st.session_state["weights_x"] = weights_x
-    st.session_state["weights_y"] = weights_y
     st.session_state["n_boot"] = int(n_boot)
 
     st.success("Analysis completed.")
@@ -1265,31 +1234,39 @@ if run:
 
 if st.session_state.get("analysis_done", False):
 
+    df_input = st.session_state["df_input"]
     full = st.session_state["full_results"]
     res = st.session_state["res"]
-    topsis_x = st.session_state["topsis_x"]
-    topsis_y = st.session_state["topsis_y"]
+    pis_nis_audit = st.session_state["pis_nis_audit"]
+    group_topsis = st.session_state["group_topsis"]
+    group_pis_nis = st.session_state["group_pis_nis"]
     fcm_x = st.session_state["fcm_x"]
     fcm_y = st.session_state["fcm_y"]
     items_x = st.session_state["items_x"]
     items_y = st.session_state["items_y"]
     lname_x = st.session_state["lname_x"]
     lname_y = st.session_state["lname_y"]
-    tfn_map_by_item = st.session_state["tfn_map_by_item"]
     group_cols = st.session_state["group_cols"]
     ratio_cols = st.session_state["ratio_cols"]
-    weights_x = st.session_state["weights_x"]
-    weights_y = st.session_state["weights_y"]
     n_boot = st.session_state["n_boot"]
 
     # --------------------------------------------------------
-    # A) Individual TOPSIS
+    # 1. Individual TOPSIS
     # --------------------------------------------------------
+
     st.header("📊 1. Individual Fuzzy-Hybrid TOPSIS")
 
     c1, c2 = st.columns(2)
-    c1.metric(f"Mean {lname_x}", f"{res[lname_x].mean():.4f}")
-    c2.metric(f"Mean {lname_y}", f"{res[lname_y].mean():.4f}")
+
+    c1.metric(
+        f"Mean {lname_x}",
+        f"{res[lname_x].mean():.4f}",
+    )
+
+    c2.metric(
+        f"Mean {lname_y}",
+        f"{res[lname_y].mean():.4f}",
+    )
 
     st.dataframe(
         full,
@@ -1298,42 +1275,39 @@ if st.session_state.get("analysis_done", False):
     )
 
     st.download_button(
-        "⬇️ Download complete individual results",
+        "⬇️ Download individual results",
         data=full.to_csv(index=False).encode("utf-8"),
-        file_name="fuzzy_hybrid_individual_results.csv",
+        file_name="topsis_individual.csv",
         mime="text/csv",
     )
 
     # --------------------------------------------------------
-    # B) PIS / NIS and raw weights
+    # 2. Individual PIS/NIS audit
     # --------------------------------------------------------
-    st.header("🌐 2. PIS / NIS and item weights")
 
-    pis_nis = global_pis_nis_table(
-        topsis_x,
-        topsis_y,
-        items_x,
-        items_y,
-        lname_x,
-        lname_y,
-    )
+    st.header("🌐 2. Individual PIS/NIS audit")
 
     st.caption(
-        "Raw weights are displayed exactly as used. "
-        "They are not rescaled to sum to 1."
+        "For each item, PIS is the largest observed defuzzified value "
+        "and NIS is the smallest observed defuzzified value across all firms."
     )
-    st.dataframe(pis_nis, use_container_width=True)
+
+    st.dataframe(
+        pis_nis_audit,
+        use_container_width=True,
+    )
 
     st.download_button(
-        "⬇️ Download PIS/NIS",
-        data=pis_nis.to_csv(index=False).encode("utf-8"),
-        file_name="global_pis_nis.csv",
+        "⬇️ Download individual PIS/NIS audit",
+        data=pis_nis_audit.to_csv(index=False).encode("utf-8"),
+        file_name="pis_nis_audit.csv",
         mime="text/csv",
     )
 
     # --------------------------------------------------------
-    # C) Fuzzy C-Means
+    # 3. Fuzzy C-Means
     # --------------------------------------------------------
+
     st.header("🔺 3. Fuzzy C-Means")
 
     fcm_metrics = pd.DataFrame([
@@ -1357,26 +1331,42 @@ if st.session_state.get("analysis_done", False):
         },
     ])
 
-    st.dataframe(fcm_metrics, use_container_width=True)
+    st.dataframe(
+        fcm_metrics,
+        use_container_width=True,
+    )
 
     centers = pd.concat([
-        fcm_centers_table(fcm_x, items_x, lname_x),
-        fcm_centers_table(fcm_y, items_y, lname_y),
+        fcm_centers_table(
+            fcm_x,
+            items_x,
+            lname_x,
+        ),
+        fcm_centers_table(
+            fcm_y,
+            items_y,
+            lname_y,
+        ),
     ], ignore_index=True)
 
-    st.subheader("Fuzzy cluster prototypes")
-    st.dataframe(centers, use_container_width=True)
+    st.subheader("Fuzzy cluster profiles")
+
+    st.dataframe(
+        centers,
+        use_container_width=True,
+    )
 
     st.download_button(
-        "⬇️ Download fuzzy cluster prototypes",
+        "⬇️ Download fuzzy cluster profiles",
         data=centers.to_csv(index=False).encode("utf-8"),
-        file_name="fuzzy_cluster_prototypes.csv",
+        file_name="fuzzy_cluster_profiles.csv",
         mime="text/csv",
     )
 
     # --------------------------------------------------------
-    # D) Classic quadrants
+    # 4. Classic quadrants
     # --------------------------------------------------------
+
     st.header("◼️ 4. Classic 4-quadrant model")
 
     classic_counts = (
@@ -1385,13 +1375,27 @@ if st.session_state.get("analysis_done", False):
         .rename_axis("Quadrant")
         .reset_index(name="N")
     )
-    classic_counts["Percent"] = 100 * classic_counts["N"] / len(res)
 
-    st.dataframe(classic_counts, use_container_width=True)
+    classic_counts["Percent"] = (
+        100.0 * classic_counts["N"] / len(res)
+    )
+
+    st.dataframe(
+        classic_counts,
+        use_container_width=True,
+    )
+
+    st.download_button(
+        "⬇️ Download classic quadrants",
+        data=classic_counts.to_csv(index=False).encode("utf-8"),
+        file_name="classic_quadrants.csv",
+        mime="text/csv",
+    )
 
     # --------------------------------------------------------
-    # E) Extended 16 categories
+    # 5. Extended 16 categories
     # --------------------------------------------------------
+
     st.header("🧩 5. Extended Eco-Apostle 4×4")
 
     ext_counts = (
@@ -1400,43 +1404,80 @@ if st.session_state.get("analysis_done", False):
         .rename_axis("ExtendedClass")
         .reset_index(name="N")
     )
-    ext_counts["Percent"] = 100 * ext_counts["N"] / len(res)
 
-    st.dataframe(ext_counts, use_container_width=True)
+    ext_counts["Percent"] = (
+        100.0 * ext_counts["N"] / len(res)
+    )
+
+    st.dataframe(
+        ext_counts,
+        use_container_width=True,
+    )
+
+    st.download_button(
+        "⬇️ Download extended model",
+        data=ext_counts.to_csv(index=False).encode("utf-8"),
+        file_name="eco_extended_apostle_model.csv",
+        mime="text/csv",
+    )
 
     # --------------------------------------------------------
-    # F) Group TOPSIS
+    # 6. Group TOPSIS
     # --------------------------------------------------------
+
     st.header("🧮 6. Group TOPSIS")
 
-    if group_cols:
-        group_table = unified_group_topsis_table(
-            df,
-            items_x,
-            items_y,
-            tfn_map_by_item,
-            group_cols,
-            lname_x,
-            lname_y,
-            weights_x,
-            weights_y,
+    if group_cols and not group_topsis.empty:
+        st.dataframe(
+            group_topsis,
+            use_container_width=True,
         )
-
-        st.dataframe(group_table, use_container_width=True)
 
         st.download_button(
             "⬇️ Download Group TOPSIS",
-            data=group_table.to_csv(index=False).encode("utf-8"),
-            file_name="group_topsis.csv",
+            data=group_topsis.to_csv(index=False).encode("utf-8"),
+            file_name="topsis_group.csv",
             mime="text/csv",
         )
     else:
-        st.info("Select one or more grouping variables in the sidebar.")
+        st.info(
+            "Select one or more grouping variables in the sidebar."
+        )
 
     # --------------------------------------------------------
-    # G) Probability Ratios — Classic 4
+    # 7. Group PIS/NIS
     # --------------------------------------------------------
-    st.header("📈 7. Probability Ratios — Classic 4 quadrants")
+
+    st.header("🎯 7. Group PIS/NIS")
+
+    st.caption(
+        "For each selected grouping variable and each latent item, "
+        "the group PIS is the largest group mean and the group NIS "
+        "is the smallest group mean."
+    )
+
+    if group_cols and not group_pis_nis.empty:
+        st.dataframe(
+            group_pis_nis,
+            use_container_width=True,
+        )
+
+        st.download_button(
+            "⬇️ Download Group PIS/NIS",
+            data=group_pis_nis.to_csv(index=False).encode("utf-8"),
+            file_name="group_pis_nis.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info(
+            "Select one or more grouping variables in the sidebar."
+        )
+
+    # --------------------------------------------------------
+    # 8. Probability Ratios — Classic
+    # --------------------------------------------------------
+
+    st.header("📈 8. Probability Ratios — Classic quadrants")
 
     if ratio_cols:
         ratios_classic = probability_ratios_for_target(
@@ -1447,24 +1488,30 @@ if st.session_state.get("analysis_done", False):
             n_boot=n_boot,
         )
 
-        st.dataframe(ratios_classic, use_container_width=True)
+        st.dataframe(
+            ratios_classic,
+            use_container_width=True,
+        )
 
         st.download_button(
             "⬇️ Download Classic Probability Ratios",
             data=ratios_classic.to_csv(index=False).encode("utf-8"),
-            file_name="probability_ratios_classic4.csv",
+            file_name="probability_ratios_classic.csv",
             mime="text/csv",
         )
     else:
-        st.info("Select covariates for Probability Ratios in the sidebar.")
+        st.info(
+            "Select covariates for Probability Ratios in the sidebar."
+        )
 
     # --------------------------------------------------------
-    # H) Probability Ratios — Extended 16
+    # 9. Probability Ratios — Extended
     # --------------------------------------------------------
-    st.header("📈 8. Probability Ratios — Extended 16 classes")
+
+    st.header("📈 9. Probability Ratios — Extended classes")
 
     if ratio_cols:
-        ratios_ext = probability_ratios_for_target(
+        ratios_extended = probability_ratios_for_target(
             full,
             "Extended4x4",
             ratio_cols,
@@ -1472,15 +1519,18 @@ if st.session_state.get("analysis_done", False):
             n_boot=n_boot,
         )
 
-        st.dataframe(ratios_ext, use_container_width=True)
+        st.dataframe(
+            ratios_extended,
+            use_container_width=True,
+        )
 
         st.download_button(
             "⬇️ Download Extended Probability Ratios",
-            data=ratios_ext.to_csv(index=False).encode("utf-8"),
-            file_name="probability_ratios_extended16.csv",
+            data=ratios_extended.to_csv(index=False).encode("utf-8"),
+            file_name="probability_ratios_extended.csv",
             mime="text/csv",
         )
     else:
-        st.info("Select covariates for Probability Ratios in the sidebar.")
-
-# END OF STREAMLIT APP
+        st.info(
+            "Select covariates for Probability Ratios in the sidebar."
+        )
