@@ -18,7 +18,7 @@ Main design choices:
   With equal weighting every item has weight 1.0, regardless of how many items
   form a latent variable.
 - Fuzzy C-Means is performed on the fuzzy item vectors (TFNs), separately for
-  each latent variable, using the fuzzy distance described in the paper.
+  each latent variable, using the fuzzy distance described in the .
 - The extended 4x4 Eco-Apostle classification is based on FCM memberships,
   not on arbitrary TOPSIS cut-points.
 - All 4 classic quadrant names and all 16 extended quadrant names are editable.
@@ -997,7 +997,6 @@ else:
 st.sidebar.header("3 · Item weights")
 st.sidebar.caption(
     "Default = 1.0 for every item. "
-    "Weights are NOT normalized and do NOT have to sum to 1."
 )
 
 weights_x = raw_weights_ui(items_x, "X") if items_x else []
