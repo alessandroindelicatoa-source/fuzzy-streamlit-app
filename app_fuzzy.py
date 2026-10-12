@@ -1066,14 +1066,25 @@ def tfn_table(mapping: Dict[int, TFN]) -> pd.DataFrame:
     ])
 
 
-def extended_labels_ui(name_x: str, name_y: str):
+def extended_cell_default(xl: int, yl: int, q4_labels: Dict[str, str]) -> str:
+    """
+    Default name of a 4×4 cell from the four quadrant names: corner cells are
+    the Pure categories, the rest carry the quadrant name and the two levels.
+    """
+    quad = ("H" if xl >= 3 else "L") + ("H" if yl >= 3 else "L")
+    if xl in (1, 4) and yl in (1, 4):
+        return f"Pure {q4_labels[quad]}"
+    return f"{q4_labels[quad]} ({LEVEL_NAMES[xl]} X · {LEVEL_NAMES[yl]} Y)"
+
+
+def extended_labels_ui(q4_labels: Dict[str, str]):
     labels = {}
-    for xl in range(1, 5):
-        for yl in range(1, 5):
-            default = f"{LEVEL_NAMES[xl]} {name_x} | {LEVEL_NAMES[yl]} {name_y}"
+    for yl in range(4, 0, -1):
+        for xl in range(1, 5):
             labels[(xl, yl)] = st.text_input(
                 f"({xl},{yl}) {LEVEL_NAMES[xl]} X · {LEVEL_NAMES[yl]} Y",
-                value=default, key=f"ext_label_{xl}_{yl}",
+                value=extended_cell_default(xl, yl, q4_labels),
+                key=f"ext_label_{xl}_{yl}_{'|'.join(q4_labels.values())}",
             )
     return labels
 
@@ -1192,9 +1203,9 @@ def main():
     # 1 · Latent variables
     # --------------------------
     st.sidebar.header("1 · Latent variables")
-    lname_x = st.sidebar.text_input("Latent X name (horizontal axis)", value="EA")
+    lname_x = st.sidebar.text_input("Latent X name (horizontal axis)", value="Satisfaction")
     items_x = st.sidebar.multiselect("Items for X", all_cols, key="items_x_widget")
-    lname_y = st.sidebar.text_input("Latent Y name (vertical axis)", value="STA")
+    lname_y = st.sidebar.text_input("Latent Y name (vertical axis)", value="Loyalty")
     items_y = st.sidebar.multiselect("Items for Y", all_cols, key="items_y_widget")
 
     if lname_x.strip() == lname_y.strip():
@@ -1277,10 +1288,10 @@ def main():
     # --------------------------
     st.sidebar.header("3 · Quadrant names and classic threshold")
     q4_labels = {
-        "HH": st.sidebar.text_input("High X · High Y", value="Consistent", key="q4_hh"),
-        "HL": st.sidebar.text_input("High X · Low Y", value="Conscientious", key="q4_hl"),
-        "LH": st.sidebar.text_input("Low X · High Y", value="Inconsistent", key="q4_lh"),
-        "LL": st.sidebar.text_input("Low X · Low Y", value="Negationist", key="q4_ll"),
+        "HH": st.sidebar.text_input("High X · High Y", value="Apostle", key="q4_hh"),
+        "HL": st.sidebar.text_input("High X · Low Y", value="Mercenary", key="q4_hl"),
+        "LH": st.sidebar.text_input("Low X · High Y", value="Hostage", key="q4_lh"),
+        "LL": st.sidebar.text_input("Low X · Low Y", value="Defector", key="q4_ll"),
     }
     thr_rule = st.sidebar.selectbox(
         "Classic threshold rule", ["Fixed value", "Sample median", "Sample mean"],
@@ -1291,7 +1302,7 @@ def main():
         thr_y_fixed = st.sidebar.slider(f"{lname_y} threshold", 0.0, 1.0, 0.5, 0.01)
 
     with st.sidebar.expander("Name the 16 extended cells (optional)", expanded=False):
-        ext_labels = extended_labels_ui(lname_x, lname_y)
+        ext_labels = extended_labels_ui(q4_labels)
 
     # --------------------------
     # 4 · Fuzzy clustering
