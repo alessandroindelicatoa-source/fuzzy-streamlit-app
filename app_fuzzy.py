@@ -1203,9 +1203,9 @@ def main():
     # 1 · Latent variables
     # --------------------------
     st.sidebar.header("1 · Latent variables")
-    lname_x = st.sidebar.text_input("Latent X name (horizontal axis)", value="Satisfaction")
+    lname_x = st.sidebar.text_input("Latent X name (horizontal axis)", value="LATX")
     items_x = st.sidebar.multiselect("Items for X", all_cols, key="items_x_widget")
-    lname_y = st.sidebar.text_input("Latent Y name (vertical axis)", value="Loyalty")
+    lname_y = st.sidebar.text_input("Latent Y name (vertical axis)", value="LATY")
     items_y = st.sidebar.multiselect("Items for Y", all_cols, key="items_y_widget")
 
     if lname_x.strip() == lname_y.strip():
