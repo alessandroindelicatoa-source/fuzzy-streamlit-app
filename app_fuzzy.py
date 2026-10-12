@@ -753,20 +753,18 @@ def counts_table(series: pd.Series, order: List[str], name: str) -> pd.DataFrame
 # 7) Conditional probability ratios with bootstrap CIs — Eq. (9)
 # ============================================================
 
-def _ratio(A: np.ndarray, B: np.ndarray) -> float:
-    pA, pB = A.mean(), B.mean()
-    if pA == 0 or pB == 0:
-        return np.nan
-    return float((A & B).mean() / (pA * pB))
+def bootstrap_weights(N: int, n_boot: int = 1000, seed: int = 42) -> np.ndarray:
+    """
+    Bootstrap resamples as counts: row b says how many times each respondent is
+    drawn in resample b (equivalent to drawing N respondents with replacement).
+    The same resamples are reused for every target, covariate and group.
+    """
+    rng = np.random.default_rng(seed)
+    return rng.multinomial(N, np.full(N, 1.0 / N), size=n_boot).astype(np.float64)
 
 
-def _ratio_bootstrap_matrix(Aboot: np.ndarray, Bboot: np.ndarray) -> np.ndarray:
-    pA = Aboot.mean(axis=1)
-    pB = Bboot.mean(axis=1)
-    pAB = (Aboot & Bboot).mean(axis=1)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        r = np.where((pA > 0) & (pB > 0), pAB / (pA * pB), np.nan)
-    return r
+def _one_hot(values: np.ndarray, levels: list) -> np.ndarray:
+    return np.stack([values == lv for lv in levels], axis=1).astype(np.float64)
 
 
 def probability_ratios(
@@ -774,22 +772,20 @@ def probability_ratios(
     target_col: str,
     targets: List[str],
     covar_cols: List[str],
+    W: np.ndarray,
     max_levels: int = 30,
-    n_boot: int = 1000,
-    seed: int = 42,
-    chunk: int = 250,
 ) -> pd.DataFrame:
     """
     R_AB = P(A∩B) / [P(A)P(B)], A = membership in a target category,
-    B = membership in a covariate group. 95% percentile CIs from n_boot
-    bootstrap resamples (the same resamples are used for every A-B pair).
+    B = membership in a covariate group. 95% percentile intervals from the
+    bootstrap resamples in W (n_boot × N counts). Resamples where P(A) or P(B)
+    is zero are left out of the interval for that pair.
     Driver: CI_low > 1. Barrier: CI_high < 1. Otherwise independent.
     """
     N = len(df)
-    rng = np.random.default_rng(seed)
-    idx_all = rng.integers(0, N, size=(n_boot, N))
-
-    tgt = df[target_col].astype(str).to_numpy()
+    T = _one_hot(df[target_col].astype(str).to_numpy(), targets)          # N × t
+    pA_b = (W @ T) / N                                                     # B × t
+    pA = T.mean(axis=0)
     rows = []
 
     for cov in covar_cols:
@@ -798,23 +794,28 @@ def probability_ratios(
         if len(levels) > max_levels:
             st.warning(f"'{cov}' has {len(levels)} levels; only the first {max_levels} are used.")
             levels = levels[:max_levels]
+        if not levels:
+            continue
 
-        for lv in levels:
-            B = (series == lv).to_numpy()
-            for t in targets:
-                A = tgt == t
-                vals = []
-                for s in range(0, n_boot, chunk):
-                    idx = idx_all[s:s + chunk]
-                    vals.append(_ratio_bootstrap_matrix(A[idx], B[idx]))
-                vals = np.concatenate(vals)
-                vals = vals[np.isfinite(vals)]
+        G = _one_hot(series.to_numpy(), levels)                            # N × g
+        t, g = T.shape[1], G.shape[1]
+        TG = (T[:, :, None] * G[:, None, :]).reshape(N, t * g)             # N × (t·g)
 
-                point = _ratio(A, B)
-                if len(vals):
-                    lo, hi = np.percentile(vals, [2.5, 97.5])
-                else:
-                    lo = hi = np.nan
+        pB_b = (W @ G) / N                                                 # B × g
+        pAB_b = ((W @ TG) / N).reshape(-1, t, g)                           # B × t × g
+        denom = pA_b[:, :, None] * pB_b[:, None, :]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            r_b = np.where(denom > 0, pAB_b / denom, np.nan)
+            lo_all = np.nanpercentile(r_b, 2.5, axis=0)                    # t × g
+            hi_all = np.nanpercentile(r_b, 97.5, axis=0)
+
+        pB = G.mean(axis=0)
+        n_AB = (T.T @ G)                                                   # t × g counts
+
+        for gi, lv in enumerate(levels):
+            for ti, tname in enumerate(targets):
+                point = (n_AB[ti, gi] / N) / (pA[ti] * pB[gi]) if pA[ti] > 0 and pB[gi] > 0 else np.nan
+                lo, hi = lo_all[ti, gi], hi_all[ti, gi]
 
                 if np.isfinite(lo) and lo > 1:
                     assoc = "Driver (+)"
@@ -828,14 +829,14 @@ def probability_ratios(
                 rows.append({
                     "Covariate": cov,
                     "Group": str(lv),
-                    "Target": t,
-                    "N group": int(B.sum()),
-                    "N target ∩ group": int((A & B).sum()),
-                    "Ratio": round(point, 4) if np.isfinite(point) else np.nan,
+                    "Target": tname,
+                    "N group": int(G[:, gi].sum()),
+                    "N target ∩ group": int(n_AB[ti, gi]),
+                    "Ratio": round(float(point), 4) if np.isfinite(point) else np.nan,
                     "CI_low (2.5%)": round(float(lo), 4) if np.isfinite(lo) else np.nan,
                     "CI_high (97.5%)": round(float(hi), 4) if np.isfinite(hi) else np.nan,
                     "Association": assoc,
-                    "Note": "no cases in A∩B" if (A & B).sum() == 0 else "",
+                    "Note": "no cases in A∩B" if n_AB[ti, gi] == 0 else "",
                 })
 
     return pd.DataFrame(rows)
@@ -954,7 +955,7 @@ def fig_classic(x, y, thr_x, thr_y, name_x, name_y, labels):
 
 def fig_to_png(fig) -> bytes:
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=160, bbox_inches="tight")
     return buf.getvalue()
 
 
@@ -1104,11 +1105,17 @@ def show_table(title: str, df: pd.DataFrame, file_name: str, caption: str = None
     )
 
 
-def show_fig(fig, file_name: str):
-    st.pyplot(fig, use_container_width=False)
-    st.download_button(f"⬇️ {file_name}", data=fig_to_png(fig), file_name=file_name,
-                       mime="image/png", key=f"dl_{file_name}")
+def render_png(fig) -> bytes:
+    png = fig_to_png(fig)
     plt.close(fig)
+    return png
+
+
+def show_fig(png: bytes, file_name: str, width: int = None):
+    """Figures are rendered once when the analysis runs; reruns only show the PNG."""
+    st.image(png, width=width)
+    st.download_button(f"⬇️ {file_name}", data=png, file_name=file_name,
+                       mime="image/png", key=f"dl_{file_name}")
 
 
 def excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
@@ -1120,8 +1127,19 @@ def excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
     return buf.getvalue()
 
 
+@st.cache_data(show_spinner=False)
+def read_upload(data: bytes, name: str) -> pd.DataFrame:
+    """Read once per file; later reruns reuse the cached table."""
+    # Only true blanks count as missing: answer labels such as "None" stay as categories.
+    na = ["", "NA", "N/A", "n/a", "NaN", "nan", "#N/A", "NULL", "null"]
+    if name.lower().endswith(".csv"):
+        return pd.read_csv(io.BytesIO(data), sep=None, engine="python",
+                           keep_default_na=False, na_values=na)
+    return pd.read_excel(io.BytesIO(data), keep_default_na=False, na_values=na)
+
+
 METHOD_TEXT = r"""
-Implementation of Section 2 of Indelicato, Moral-Cuadra, Orgaz-Agüera & Martín (2026),
+Implementation of Methodology of Indelicato, Moral-Cuadra, Orgaz-Agüera & Martín (2026),
 *International Journal of Sustainable Transportation*, 20(1), 1–15.
 
 **1 · Fuzzy Hybrid TOPSIS**
@@ -1183,13 +1201,7 @@ def main():
         st.stop()
 
     try:
-        # Only true blanks count as missing: answer labels such as "None" stay as categories.
-        na = ["", "NA", "N/A", "n/a", "NaN", "nan", "#N/A", "NULL", "null"]
-        if up.name.lower().endswith(".csv"):
-            df_raw = pd.read_csv(up, sep=None, engine="python",
-                                 keep_default_na=False, na_values=na)
-        else:
-            df_raw = pd.read_excel(up, keep_default_na=False, na_values=na)
+        df_raw = read_upload(up.getvalue(), up.name)
     except Exception as e:
         st.error(f"Could not read the uploaded file: {e}")
         st.stop()
@@ -1203,9 +1215,9 @@ def main():
     # 1 · Latent variables
     # --------------------------
     st.sidebar.header("1 · Latent variables")
-    lname_x = st.sidebar.text_input("Latent X name (horizontal axis)", value="LATX")
+    lname_x = st.sidebar.text_input("Latent X name (horizontal axis)", value="LatX")
     items_x = st.sidebar.multiselect("Items for X", all_cols, key="items_x_widget")
-    lname_y = st.sidebar.text_input("Latent Y name (vertical axis)", value="LATY")
+    lname_y = st.sidebar.text_input("Latent Y name (vertical axis)", value="LatY")
     items_y = st.sidebar.multiselect("Items for Y", all_cols, key="items_y_widget")
 
     if lname_x.strip() == lname_y.strip():
@@ -1283,72 +1295,80 @@ def main():
     else:
         st.success("No missing or out-of-scale values in the selected items.")
 
-    # --------------------------
-    # 3 · Classic quadrants
-    # --------------------------
-    st.sidebar.header("3 · Quadrant names and classic threshold")
-    q4_labels = {
-        "HH": st.sidebar.text_input("High X · High Y", value="Apostle", key="q4_hh"),
-        "HL": st.sidebar.text_input("High X · Low Y", value="Mercenary", key="q4_hl"),
-        "LH": st.sidebar.text_input("Low X · High Y", value="Hostage", key="q4_lh"),
-        "LL": st.sidebar.text_input("Low X · Low Y", value="Defector", key="q4_ll"),
-    }
-    thr_rule = st.sidebar.selectbox(
-        "Classic threshold rule", ["Fixed value", "Sample median", "Sample mean"],
-    )
-    thr_x_fixed = thr_y_fixed = 0.5
-    if thr_rule == "Fixed value":
-        thr_x_fixed = st.sidebar.slider(f"{lname_x} threshold", 0.0, 1.0, 0.5, 0.01)
-        thr_y_fixed = st.sidebar.slider(f"{lname_y} threshold", 0.0, 1.0, 0.5, 0.01)
+    # Settings below live in a form: editing them does not rerun the app.
+    # Changes are applied when "Run analysis" is pressed.
+    with st.sidebar.form("settings"):
+        # --------------------------
+        # 3 · Classic quadrants
+        # --------------------------
+        st.header("3 · Quadrant names and classic threshold")
+        q4_labels = {
+            "HH": st.text_input("High X · High Y", value="Apostle", key="q4_hh"),
+            "HL": st.text_input("High X · Low Y", value="Mercenary", key="q4_hl"),
+            "LH": st.text_input("Low X · High Y", value="Hostage", key="q4_lh"),
+            "LL": st.text_input("Low X · Low Y", value="Defector", key="q4_ll"),
+        }
+        thr_rule = st.selectbox(
+            "Classic threshold rule", ["Fixed value", "Sample median", "Sample mean"],
+        )
+        thr_x_fixed = st.slider(f"{lname_x} threshold", 0.0, 1.0, 0.5, 0.01,
+                                help="Used only with the 'Fixed value' rule.")
+        thr_y_fixed = st.slider(f"{lname_y} threshold", 0.0, 1.0, 0.5, 0.01,
+                                help="Used only with the 'Fixed value' rule.")
 
-    with st.sidebar.expander("Name the 16 extended cells (optional)", expanded=False):
-        ext_labels = extended_labels_ui(q4_labels)
+        with st.expander("Name the 16 extended cells (optional)", expanded=False):
+            ext_labels = extended_labels_ui(q4_labels)
 
-    # --------------------------
-    # 4 · Fuzzy clustering
-    # --------------------------
-    st.sidebar.header("4 · Fuzzy clustering")
-    cluster_mode = st.sidebar.selectbox(
-        "Representative profiles",
-        ["Fixed: min / median / max TOPSIS (paper)", "Estimated: iterative fuzzy C-means"],
-    )
-    with st.sidebar.expander("Clustering parameters", expanded=False):
-        m_fuzzy = st.slider("Fuzzifier m", 1.1, 3.0, 2.0, 0.1)
-        w1_extremes = st.slider("w1 — weight of TFN extremes (a1, a3)", 0.50, 1.00, 0.70, 0.05)
-        w2_centers = round(1.0 - w1_extremes, 10)
-        st.write(f"w2 — weight of TFN centre (a2) = **{w2_centers:.2f}**")
-        alpha = st.slider("α (membership threshold)", 0.30, 0.80, 0.50, 0.05)
+        # --------------------------
+        # 4 · Fuzzy clustering
+        # --------------------------
+        st.header("4 · Fuzzy clustering")
+        cluster_mode = st.selectbox(
+            "Representative profiles",
+            ["Fixed: min / median / max TOPSIS (paper)", "Estimated: iterative fuzzy C-means"],
+        )
+        with st.expander("Clustering parameters", expanded=False):
+            m_fuzzy = st.slider("Fuzzifier m", 1.1, 3.0, 2.0, 0.1)
+            w1_extremes = st.slider("w1 — weight of TFN extremes (a1, a3)", 0.50, 1.00, 0.70, 0.05)
+            w2_centers = round(1.0 - w1_extremes, 10)
+            st.write(f"w2 — weight of TFN centre (a2) = **{w2_centers:.2f}**")
+            alpha = st.slider("α (membership threshold)", 0.30, 0.80, 0.50, 0.05)
 
-    # --------------------------
-    # 5 · Groups and covariates
-    # --------------------------
-    st.sidebar.header("5 · Groups and covariates")
-    group_cols = st.sidebar.multiselect("Group TOPSIS by", all_cols, key="group_cols_widget")
-    scope_label = st.sidebar.radio(
-        "Group ideal solutions (PIS/NIS)",
-        ["Across all groups (paper)", "Within each grouping variable"],
-    )
-    scope = "pooled" if scope_label.startswith("Across") else "within"
+        # --------------------------
+        # 5 · Groups and covariates
+        # --------------------------
+        st.header("5 · Groups and covariates")
+        group_cols = st.multiselect("Group TOPSIS by", all_cols, key="group_cols_widget")
+        scope_label = st.radio(
+            "Group ideal solutions (PIS/NIS)",
+            ["Across all groups (paper)", "Within each grouping variable"],
+        )
+        scope = "pooled" if scope_label.startswith("Across") else "within"
 
-    ratio_cols = st.sidebar.multiselect("Covariates for probability ratios", all_cols,
-                                        key="ratio_cols_widget")
-    ratio_targets = st.sidebar.multiselect(
-        "Probability ratios for",
-        ["Pure categories (paper)", "ECO-Extended quadrants", "Classic quadrants"],
-        default=["Pure categories (paper)"],
-    )
-    n_boot = int(st.sidebar.number_input("Bootstrap replications", 100, 10000, 1000, 100))
-    cov_missing_group = st.sidebar.checkbox(
-        "Keep missing covariate values as a 'Missing' group", value=False,
-        help="Otherwise respondents with a missing covariate are left out of that "
-             "covariate's groups only.",
-    )
+        ratio_cols = st.multiselect("Covariates for probability ratios", all_cols,
+                                            key="ratio_cols_widget")
+        ratio_targets = st.multiselect(
+            "Probability ratios for",
+            ["Pure categories (paper)", "ECO-Extended quadrants", "Classic quadrants"],
+            default=["Pure categories (paper)"],
+        )
+        n_boot = int(st.number_input("Bootstrap replications", 100, 10000, 1000, 100))
+        cov_missing_group = st.checkbox(
+            "Keep missing covariate values as a 'Missing' group", value=False,
+            help="Otherwise respondents with a missing covariate are left out of that "
+                 "covariate's groups only.",
+        )
+
+        run_clicked = st.form_submit_button("▶ Run analysis", type="primary",
+                                            use_container_width=True)
 
     # ============================================================
     # Run
     # ============================================================
     st.header("Step 3 · Run")
-    if st.button("Run analysis", type="primary"):
+    st.caption("Adjust the settings in the sidebar and press ▶ Run analysis at the bottom of it. "
+               "Sidebar changes are applied only when you press it.")
+    if run_clicked:
         if lname_x.strip() == lname_y.strip():
             st.error("The two latent variables need different names.")
             st.stop()
@@ -1455,12 +1475,26 @@ def main():
                 "Classic quadrants": ("ClassicQuadrant", quad_names),
             }
             with st.spinner("Bootstrapping probability ratios..."):
+                W = bootstrap_weights(len(full), n_boot, seed=42)
                 for key in ratio_targets:
                     col, targets = spec[key]
-                    r = probability_ratios(full, col, targets, ratio_cols, n_boot=n_boot)
+                    r = probability_ratios(full, col, targets, ratio_cols, W)
                     ratio_tables[key] = (r, drivers_barriers_table(r, targets))
 
+        # Figures are drawn once here; later reruns only display the stored PNGs.
+        with st.spinner("Drawing figures..."):
+            figs = {
+                "classic": render_png(fig_classic(x, y, thr_x, thr_y, lname_x, lname_y, q4_labels)),
+                "heatmap": render_png(fig_heatmap_4x4(level_x, level_y, lname_x, lname_y)),
+                "tern_x": render_png(fig_ternary(Ux, lname_x, "#2b59c3")),
+                "tern_y": render_png(fig_ternary(Uy, lname_y, "#e67e22")),
+            }
+            if not g_scores.empty:
+                figs["group"] = render_png(fig_group_topsis(g_scores, lname_x, lname_y))
+
+        st.session_state.pop("excel_bytes", None)
         st.session_state["results"] = {
+            "figs": figs,
             "full": full, "res": res, "audit": audit,
             "fx": fx, "fy": fy, "items_x": items_x, "items_y": items_y,
             "lname_x": lname_x, "lname_y": lname_y,
@@ -1524,7 +1558,7 @@ def main():
         else:
             show_table("TOPSIS by group", R["g_scores"], "topsis_group.csv")
             st.subheader("Figure: TOPSIS by group")
-            show_fig(fig_group_topsis(R["g_scores"], lx, ly), "fig_group_topsis.png")
+            show_fig(R["figs"]["group"], "fig_group_topsis.png")
             show_table(
                 "Ideal solutions (Table 4 layout)", R["g_ideal"], "group_ideal_solutions.csv",
                 "PIS = highest group mean of the item, NIS = lowest, with the group that reaches it. "
@@ -1570,9 +1604,9 @@ def main():
         st.subheader("Figure: ternary plots of memberships")
         c1, c2 = st.columns(2)
         with c1:
-            show_fig(fig_ternary(R["fx"]["U"], lx, "#2b59c3"), f"fig_ternary_{lx}.png")
+            show_fig(R["figs"]["tern_x"], f"fig_ternary_{lx}.png")
         with c2:
-            show_fig(fig_ternary(R["fy"]["U"], ly, "#e67e22"), f"fig_ternary_{ly}.png")
+            show_fig(R["figs"]["tern_y"], f"fig_ternary_{ly}.png")
 
     # 4 · Apostle models
     with tabs[3]:
@@ -1580,14 +1614,12 @@ def main():
         st.caption(f"Threshold rule: {R['thr_rule']} — {lx} ≥ {R['thr_x']:.4f}, {ly} ≥ {R['thr_y']:.4f}")
         classic_counts = counts_table(res["ClassicQuadrant"], R["quad_names"], "Quadrant")
         show_table(None, classic_counts, "classic_quadrants.csv")
-        show_fig(fig_classic(res[f"TOPSIS_{lx}"].to_numpy(), res[f"TOPSIS_{ly}"].to_numpy(),
-                             R["thr_x"], R["thr_y"], lx, ly, R["q4_labels"]),
-                 "fig_classic_apostle.png")
+        show_fig(R["figs"]["classic"], "fig_classic_apostle.png", width=560)
 
         st.header("Fuzzy Clustering ECO-Extended Apostle Model")
         st.caption(f"α = {R['alpha']:.2f}. Levels: 1 Least · 2 Undetermined · 3 Intermediate · 4 Most. "
                    "Quadrants: levels 3–4 = high side, 1–2 = low side.")
-        show_fig(fig_heatmap_4x4(R["level_x"], R["level_y"], lx, ly), "fig_eco_extended_4x4.png")
+        show_fig(R["figs"]["heatmap"], "fig_eco_extended_4x4.png", width=600)
 
         ext_quad = counts_table(res["ECOExtendedQuadrant"], R["quad_names"], "Quadrant")
         show_table("ECO-Extended quadrants", ext_quad, "eco_extended_quadrants.csv")
@@ -1644,12 +1676,18 @@ def main():
                    "Classic quadrants": "Classic"}[key]
             sheets[f"Ratios_{tag}"] = r
             sheets[f"DriversBarriers_{tag}"] = db
-        st.download_button(
-            "⬇️ Download all tables (Excel)",
-            data=excel_bytes(sheets),
-            file_name="fuzzy_quadrant_results.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        # The workbook is built only on request (about 1 s), then kept until the next run.
+        if "excel_bytes" not in st.session_state:
+            if st.button("Prepare Excel file with all tables"):
+                with st.spinner("Writing Excel file..."):
+                    st.session_state["excel_bytes"] = excel_bytes(sheets)
+        if "excel_bytes" in st.session_state:
+            st.download_button(
+                "⬇️ Download all tables (Excel)",
+                data=st.session_state["excel_bytes"],
+                file_name="fuzzy_quadrant_results.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
 
 if __name__ == "__main__":
