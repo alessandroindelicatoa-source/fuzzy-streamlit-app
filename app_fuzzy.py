@@ -413,6 +413,15 @@ def individual_pis_nis_audit(
 # 4) Group Fuzzy Hybrid TOPSIS — Eq. (1) aggregation, pooled ideals
 # ============================================================
 
+def as_label(v) -> str:
+    """Category label as text: 2.0 -> '2', NaN -> 'Missing'."""
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "Missing"
+    if isinstance(v, (float, np.floating)) and float(v).is_integer():
+        return str(int(v))
+    return str(v)
+
+
 def group_label(var: str, level) -> str:
     return f"{var}: {level}"
 
@@ -1001,7 +1010,7 @@ def tfn_editor(key: str, title: str) -> Tuple[Dict[int, TFN], List[str]]:
     edited = st.data_editor(
         base,
         num_rows="dynamic",
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         key=f"tfn_editor_{key}_{preset}",
         column_config={
@@ -1095,7 +1104,7 @@ def show_table(title: str, df: pd.DataFrame, file_name: str, caption: str = None
         st.subheader(title)
     if caption:
         st.caption(caption)
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, width="stretch")
     st.download_button(
         f"⬇️ {file_name}",
         data=df.to_csv(index=False).encode("utf-8"),
@@ -1111,7 +1120,7 @@ def render_png(fig) -> bytes:
     return png
 
 
-def show_fig(png: bytes, file_name: str, width: int = None):
+def show_fig(png: bytes, file_name: str, width="content"):
     """Figures are rendered once when the analysis runs; reruns only show the PNG."""
     st.image(png, width=width)
     st.download_button(f"⬇️ {file_name}", data=png, file_name=file_name,
@@ -1139,7 +1148,7 @@ def read_upload(data: bytes, name: str) -> pd.DataFrame:
 
 
 METHOD_TEXT = r"""
-Implementation of Methodology of Indelicato, Moral-Cuadra, Orgaz-Agüera & Martín (2026),
+Implementation of Section 2 of Indelicato, Moral-Cuadra, Orgaz-Agüera & Martín (2026),
 *International Journal of Sustainable Transportation*, 20(1), 1–15.
 
 **1 · Fuzzy Hybrid TOPSIS**
@@ -1208,7 +1217,7 @@ def main():
 
     st.subheader("Uploaded data")
     st.write(f"Rows: **{len(df_raw):,}** · Columns: **{len(df_raw.columns):,}**")
-    st.dataframe(df_raw.head(), use_container_width=True)
+    st.dataframe(df_raw.head(), width="stretch")
     all_cols = list(df_raw.columns)
 
     # --------------------------
@@ -1262,7 +1271,7 @@ def main():
     impute_method = IMPUTATION_METHODS[0]
     max_share, k_nn = 0.34, 5
     if n_incomplete:
-        st.dataframe(rep[rep["Total missing"] > 0], use_container_width=True, hide_index=True)
+        st.dataframe(rep[rep["Total missing"] > 0], width="stretch", hide_index=True)
         impute_method = st.selectbox(
             "Replacement technique", IMPUTATION_METHODS, index=1,
             help=(
@@ -1360,7 +1369,7 @@ def main():
         )
 
         run_clicked = st.form_submit_button("▶ Run analysis", type="primary",
-                                            use_container_width=True)
+                                            width="stretch")
 
     # ============================================================
     # Run
@@ -1387,7 +1396,7 @@ def main():
         df = df.reset_index(drop=True)
         if cov_missing_group:
             for c in set(group_cols) | set(ratio_cols):
-                df[c] = df[c].astype(object).where(df[c].notna(), "Missing")
+                df[c] = [as_label(v) for v in df[c]]
         n_dropped = int((~keep).sum())
         imp_summary = rep.merge(imp_log, on="Item", how="left")
         imp_summary.insert(0, "Method", impute_method)
@@ -1535,13 +1544,13 @@ def main():
 
         first_map = next(iter(R["tfn_map"].values()))
         with st.expander("TFN conversion used (first item)"):
-            st.dataframe(tfn_table(first_map), use_container_width=True)
+            st.dataframe(tfn_table(first_map), width="stretch")
 
         st.caption(f"Missing values: {R['impute_method']}. "
                    f"{R['n_dropped']} respondent(s) dropped, "
                    f"{int((full['n_imputed_items'] > 0).sum())} with imputed items.")
         with st.expander("Missing values and replacement by item"):
-            st.dataframe(R["imp_summary"], use_container_width=True, hide_index=True)
+            st.dataframe(R["imp_summary"], width="stretch", hide_index=True)
 
         show_table("Individual results", full, "topsis_individual.csv")
         show_table(
@@ -1558,7 +1567,7 @@ def main():
         else:
             show_table("TOPSIS by group", R["g_scores"], "topsis_group.csv")
             st.subheader("Figure: TOPSIS by group")
-            show_fig(R["figs"]["group"], "fig_group_topsis.png")
+            show_fig(R["figs"]["group"], "fig_group_topsis.png", width=900)
             show_table(
                 "Ideal solutions (Table 4 layout)", R["g_ideal"], "group_ideal_solutions.csv",
                 "PIS = highest group mean of the item, NIS = lowest, with the group that reaches it. "
@@ -1577,7 +1586,7 @@ def main():
             {"Latent": ly, "FPC": R["fy"]["fpc"], "Partition entropy": R["fy"]["partition_entropy"],
              "Objective": R["fy"]["objective"], "Iterations": R["fy"]["iterations"]},
         ])
-        st.dataframe(metrics, use_container_width=True)
+        st.dataframe(metrics, width="stretch")
 
         pinfo = pd.concat([
             R["fx"]["profile_info"].assign(Latent=lx),
@@ -1634,7 +1643,7 @@ def main():
 
         st.subheader("Classic vs ECO-Extended (counts)")
         st.dataframe(pd.crosstab(res["ClassicQuadrant"], res["ECOExtendedQuadrant"], margins=True),
-                     use_container_width=True)
+                     width="stretch")
 
     # 5 · Probability ratios
     with tabs[4]:
